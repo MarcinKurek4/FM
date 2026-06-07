@@ -1,0 +1,64 @@
+# FM — Analytics Dashboard (Streamlit)
+#
+# Standalone image for the Streamlit ranking dashboard.
+# It installs only the ``analytics`` dependency group and copies the
+# ``analytics/`` directory; it does not include the FastAPI application,
+# ETL scripts, or migration tooling.
+#
+# Build:
+#   docker compose build dashboard
+#   # or
+#   docker build -f Dockerfile.analytics -t fm-dashboard .
+#
+# Run (with PostgreSQL from compose):
+#   docker compose up -d dashboard
+#
+# Run standalone (PostgreSQL must be reachable):
+#   docker run --env-file .env \
+#     -e POSTGRES_HOST=host.docker.internal \
+#     -p 8501:8501 fm-dashboard
+
+FROM python:3.14-slim AS builder
+
+ENV POETRY_VERSION=2.1.1 \
+    POETRY_VIRTUALENVS_IN_PROJECT=true \
+    POETRY_NO_INTERACTION=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN pip install --no-cache-dir "poetry==${POETRY_VERSION}"
+
+WORKDIR /app
+
+COPY pyproject.toml poetry.lock README.md ./
+
+RUN poetry install --only analytics
+
+# ---- Runtime -----------------------------------------------------------------
+
+FROM python:3.14-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:$PATH"
+
+WORKDIR /app
+
+RUN addgroup --system fm && adduser --system --ingroup fm fm
+
+COPY --from=builder /app/.venv /app/.venv
+COPY analytics ./analytics
+
+RUN chown -R fm:fm /app
+
+USER fm
+
+EXPOSE 8501
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health')" || exit 1
+
+CMD ["streamlit", "run", "analytics/dashboard.py", \
+     "--server.address", "0.0.0.0", \
+     "--server.port", "8501", \
+     "--server.headless", "true"]

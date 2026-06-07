@@ -36,6 +36,25 @@ services:
     networks:
       - fm_network
 
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.analytics
+    container_name: fm_dashboard
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+    ports:
+      - "${DASHBOARD_PORT:-8501}:8501"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - fm_network
+
 volumes:
   fm_pgdata:
 

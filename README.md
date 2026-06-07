@@ -33,6 +33,7 @@ flowchart LR
     DateCsv["data/reference/dim_date.csv"]
     API["FastAPI application"]
     DWH["PostgreSQL dwh schema"]
+    Dashboard["Streamlit Dashboard\n(analytics/)"]
 
     RawRevenue --> TitleMaster
     TitleMaster --> OMDb
@@ -43,6 +44,7 @@ flowchart LR
     RawRevenue --> DWH
     API --> OMDb
     API --> DWH
+    DWH --> Dashboard
 ```
 
 ## Stack
@@ -59,6 +61,7 @@ flowchart LR
 | Configuration | Pydantic Settings |
 | Logging | Loguru |
 | Testing | pytest + pytest-asyncio |
+| Analytics dashboard | Streamlit + Plotly |
 | Container runtime | Docker + Docker Compose |
 
 ## Setup
@@ -341,63 +344,141 @@ docker compose up -d
 ## API Endpoints
 
 The running application exposes endpoints for refreshing rating facts and
-loading new revenue data.
+loading new revenue data. Both endpoints call the OMDb API during processing.
+
+### OMDb daily quota — partial completion
+
+The free OMDb tier allows 1,000 requests per day. When the quota is exhausted,
+OMDb returns `Request limit reached!`. The API does **not** abort the whole
+request in that case. Each endpoint finishes the work it can perform with data
+already available in the warehouse or already fetched in the current run.
+
+| Condition | HTTP status | Behaviour |
+|-----------|-------------|-----------|
+| OMDb daily quota exhausted | **200 OK** | Partial success; `stopped_due_to_rate_limit: true` in the JSON body |
+| Invalid OMDb API key | **422** | Entire request aborted; no partial commit |
+| Invalid CSV (upload only) | **400** | Entire request aborted |
+
+The flag `stopped_due_to_rate_limit` signals that OMDb enrichment stopped
+early. Counters in the response describe what was actually persisted. Re-run the
+endpoint after the quota resets to process the remaining movies or titles.
 
 ### `GET /api/v1/ratings`
 
-This endpoint refreshes IMDb ratings for every movie in `dim_movie`. It uses
-the OMDb API, looks up each movie by `imdb_id` when available and by title
-otherwise, compares the fetched rating and vote count with the current
-`fact_movie_rating` row, and inserts a new SCD Type 2 snapshot only when the
-values changed. If the rating is unchanged, no new row is inserted. When the
-OMDb daily quota is exhausted, already-fetched ratings are persisted and the
-response includes ``stopped_due_to_rate_limit=true``. An invalid API key
-returns HTTP 422.
+Refreshes IMDb ratings for movies in `dim_movie`. For each movie, the service
+looks up the current rating in OMDb by `imdb_id` when available, otherwise by
+title, compares the result with the current `fact_movie_rating` row, and inserts
+a new SCD Type 2 snapshot only when the rating or vote count changed.
+
+**When the daily quota is hit during the movie loop:**
+
+- Ratings for movies **already processed** in this run are committed.
+- The loop stops; remaining movies are left unchanged until the next run.
+- The endpoint returns **HTTP 200** with `stopped_due_to_rate_limit: true`.
+- `omdb_calls_made` shows how many OMDb lookups were attempted;
+  `ratings_inserted` and `ratings_unchanged` reflect only completed movies.
+
+**Response fields** (`RatingsRefreshResponseDto`):
+
+| Field | Meaning |
+|-------|---------|
+| `total_movies` | Movies loaded from `dim_movie` at the start of the run |
+| `omdb_calls_made` | OMDb HTTP lookups performed before stop or completion |
+| `ratings_inserted` | New `fact_movie_rating` snapshots written |
+| `ratings_unchanged` | Movies whose OMDb rating matched the current row |
+| `omdb_not_found` | Movies OMDb could not match |
+| `omdb_errors` | Non-fatal per-movie failures |
+| `stopped_due_to_rate_limit` | `true` when the daily quota stopped the loop early |
+| `duration_ms` | Wall-clock duration of the run |
 
 ```mermaid
 flowchart TD
     Request["GET /api/v1/ratings"]
     LoadMovies["Load all movies from dim_movie"]
+    NextMovie{"More movies to process?"}
     FetchOMDb["Fetch current rating from OMDb"]
     FatalError{"Invalid API key?"}
     RateLimit{"Daily quota exhausted?"}
+    StopFetch["Stop fetching remaining movies"]
     Compare["Compare with current fact_movie_rating"]
     Changed{"Rating or votes changed?"}
     Insert["Insert new SCD Type 2 snapshot"]
     Skip["Skip unchanged rating"]
-    Response["Return aggregate counters with stopped_due_to_rate_limit"]
-    Error422["Return HTTP 422"]
+    Response200["HTTP 200 — counters + stopped_due_to_rate_limit"]
+    Error422["HTTP 422"]
 
     Request --> LoadMovies
-    LoadMovies --> FetchOMDb
+    LoadMovies --> NextMovie
+    NextMovie -- yes --> FetchOMDb
     FetchOMDb --> FatalError
     FatalError -- yes --> Error422
     FatalError -- no --> RateLimit
-    RateLimit -- yes --> Response
+    RateLimit -- yes --> StopFetch
+    StopFetch --> Response200
     RateLimit -- no --> Compare
     Compare --> Changed
     Changed -- yes --> Insert
     Changed -- no --> Skip
-    Insert --> Response
-    Skip --> Response
+    Insert --> NextMovie
+    Skip --> NextMovie
+    NextMovie -- no --> Response200
 ```
 
 ### `POST /api/v1/revenue/upload`
 
-This endpoint accepts a multipart CSV file in the same format as
-`revenues_per_day.csv`. It parses and validates the CSV, upserts
-distributors, ensures missing `dim_date` rows exist, checks whether titles are
-already present in `dim_movie`, and enriches missing titles from OMDb. For new
-titles, it populates `dim_rated`, `dim_genre`, `dim_director`, `dim_movie`,
-`bridge_movie_genre`, `bridge_movie_director`, and the first
-`fact_movie_rating` snapshot before inserting revenue facts.
+Accepts a multipart CSV file in the same format as `revenues_per_day.csv`.
+The pipeline:
 
-Only new `fact_revenue` rows are loaded. Duplicate rows are skipped by
-`source_row_id`, and unresolved movies are reported in the response counters.
-When the OMDb daily quota is exhausted during title enrichment, rows whose
-titles are already in `dim_movie` are still loaded; the response includes
-``stopped_due_to_rate_limit=true``. An invalid API key returns HTTP 422; invalid
-CSV input returns HTTP 400.
+1. Parses and validates the CSV.
+2. Upserts `dim_distributor` and ensures `dim_date` rows exist (no OMDb).
+3. Loads the `dim_movie` title map from the database.
+4. Fetches OMDb metadata only for titles **missing** from `dim_movie`.
+5. Resolves foreign keys and inserts new `fact_revenue` rows (`source_row_id`
+   deduplication).
+
+For titles successfully enriched in step 4, the service also upserts
+`dim_rated`, `dim_genre`, `dim_director`, `dim_movie`, bridge tables, and the
+first `fact_movie_rating` snapshot.
+
+**When the daily quota is hit during step 4:**
+
+- Steps 1–3 always complete (they do not call OMDb).
+- For each missing title, OMDb is called one at a time. When a call succeeds,
+  the full enrichment for that title runs **immediately** in the same iteration:
+  `dim_rated`, `dim_genre`, `dim_director`, `dim_movie`, bridge tables, and the
+  first `fact_movie_rating` snapshot are upserted, and the in-memory title map
+  is updated. Titles processed this way before the quota error are fully loaded
+  into the DWH — enrichment is not deferred and is not rolled back when the
+  limit is hit on a later title.
+- Step 5 then runs for **all** CSV rows whose title resolves against
+  `dim_movie`, including titles that were already in the database and titles
+  enriched in the steps above. Their `fact_revenue` rows are inserted.
+- Only titles that were **not yet fetched** from OMDb when the quota was
+  reached remain without a `dim_movie` row; matching CSV lines are counted in
+  `rows_error_movie_not_found` and are **not** inserted.
+- The endpoint returns **HTTP 200** with `stopped_due_to_rate_limit: true`.
+
+In short, after a quota stop the upload covers three groups:
+
+| Title group | Enrichment (step 4) | `fact_revenue` (step 5) |
+|-------------|---------------------|-------------------------|
+| Already in `dim_movie` before upload | Skipped (no OMDb call) | Inserted when row is new |
+| Fetched from OMDb before quota error | Completed in full | Inserted when row is new |
+| Not yet fetched when quota error occurs | Not started | Skipped (`rows_error_movie_not_found`) |
+
+**Response fields** (`RevenueUploadResponseDto`):
+
+| Field | Meaning |
+|-------|---------|
+| `facts_inserted` | New `fact_revenue` rows inserted |
+| `facts_skipped_duplicate` | Rows skipped because `source_row_id` already exists |
+| `distributors_upserted` | `dim_distributor` rows created or updated |
+| `dates_created` | `dim_date` rows created on the fly |
+| `movies_enriched_from_omdb` | New movies loaded from OMDb in this run |
+| `titles_not_found_in_omdb` | Distinct titles OMDb could not match |
+| `rows_error_movie_not_found` | CSV rows with no matching `dim_movie` row |
+| `stopped_due_to_rate_limit` | `true` when enrichment stopped due to quota |
+| `duration_ms` | Wall-clock duration of the run |
 
 ```mermaid
 flowchart TD
@@ -407,16 +488,18 @@ flowchart TD
     UpsertDistributors["Upsert dim_distributor"]
     EnsureDates["Ensure dim_date rows"]
     LoadTitleMap["Load dim_movie title map"]
-    MissingTitles{"Missing movie titles?"}
-    FetchMissing["Fetch missing metadata from OMDb"]
+    MissingTitles{"Missing titles in CSV?"}
+    FetchMissing["Fetch next missing title from OMDb"]
     FatalError{"Invalid API key?"}
     RateLimit{"Daily quota exhausted?"}
-    PersistMaster["Upsert dimensions, bridges, dim_movie, and rating snapshot"]
-    ResolveFacts["Resolve fact foreign keys"]
+    StopFetchTitles["Stop fetching new titles"]
+    PersistMaster["Enrich title: upsert dim_*, bridges, dim_movie, rating"]
+    MoreMissing{"More missing titles to fetch?"}
+    ResolveFacts["Resolve fact foreign keys for all resolvable titles"]
     InsertFacts["Insert new fact_revenue rows"]
-    Response["Return counters with stopped_due_to_rate_limit"]
-    Error400["Return HTTP 400"]
-    Error422["Return HTTP 422"]
+    Response200["HTTP 200 — counters + stopped_due_to_rate_limit"]
+    Error400["HTTP 400"]
+    Error422["HTTP 422"]
 
     Request --> Parse
     Parse --> ValidCsv
@@ -425,28 +508,88 @@ flowchart TD
     UpsertDistributors --> EnsureDates
     EnsureDates --> LoadTitleMap
     LoadTitleMap --> MissingTitles
+    MissingTitles -- no --> ResolveFacts
     MissingTitles -- yes --> FetchMissing
     FetchMissing --> FatalError
     FatalError -- yes --> Error422
     FatalError -- no --> RateLimit
-    RateLimit -- yes --> ResolveFacts
+    RateLimit -- yes --> StopFetchTitles
+    StopFetchTitles --> ResolveFacts
     RateLimit -- no --> PersistMaster
-    PersistMaster --> ResolveFacts
-    MissingTitles -- no --> ResolveFacts
+    PersistMaster --> MoreMissing
+    MoreMissing -- yes --> FetchMissing
+    MoreMissing -- no --> ResolveFacts
     ResolveFacts --> InsertFacts
-    InsertFacts --> Response
+    InsertFacts --> Response200
 ```
 
-## Changelog
+## Analytics Dashboard
 
-### [0.1.0] - 2026-06-06
+The `analytics/` directory contains a standalone Streamlit application that
+queries the DWH PostgreSQL schema directly and renders interactive box-office
+rankings. It is independent of the `src/` production layer — no imports cross
+the boundary.
 
-### Added
+### Rankings
 
-- Initial DWH model with movie, date, distributor, genre, director, rated,
-  bridge, revenue fact, and rating fact tables.
-- Initial ETL scripts for title aggregation, OMDb enrichment, OMDb DWH loading,
-  date dimension seeding, and revenue fact loading.
-- Docker Compose environment with PostgreSQL, Alembic migrations, DWH bootstrap,
-  and FastAPI startup.
-- API endpoints for rating refresh and incremental revenue CSV upload.
+| Section | Description |
+|---|---|
+| TOP 10 Movies — OMDb Box Office | Horizontal bar chart and table ranked by the OMDb-reported box office figure. |
+| TOP 10 Movies — Tracked Revenue / OMDb Ratio | Bar chart and table showing the ratio of cumulative tracked revenue to the OMDb box office value. |
+| TOP 10 Movies — Total Tracked Revenue | Horizontal bar chart and table of the 10 highest-grossing titles by cumulative tracked revenue. |
+| TOP 10 Directors — Revenue & Film Count | Bar chart, bubble chart, and table showing cumulative revenue and distinct movie count per director. |
+| TOP 10 Distributors | Donut chart, horizontal bar chart, and table of the top 10 distribution companies by revenue. |
+| TOP 3 per Release Year | Individual bar chart and table generated dynamically for each release year, year descending. |
+| TOP 3 per Genre | Individual bar chart and table generated dynamically for each genre, genre name ascending. |
+
+### Running the Dashboard — Local
+
+1. Install analytics dependencies (first time only):
+
+```bash
+poetry install --with analytics
+```
+
+2. Ensure a valid `.env` is present at the project root with `POSTGRES_*` variables set.
+
+3. Start the dashboard:
+
+```bash
+poetry run streamlit run analytics/dashboard.py
+```
+
+The application opens at `http://localhost:8501`. All data is cached for
+5 minutes; click **Refresh data** in the sidebar to force a reload.
+
+### Running the Dashboard — Docker
+
+Build and start the dedicated `dashboard` service alongside PostgreSQL:
+
+```bash
+docker compose up -d db dashboard
+```
+
+The dashboard is accessible at `http://localhost:8501` (or the port set in
+`DASHBOARD_PORT`). The service uses `Dockerfile.analytics` — a separate,
+lightweight image that installs only the `analytics` dependency group and
+does not include the FastAPI application or ETL tooling.
+
+To build the image in isolation:
+
+```bash
+docker build -f Dockerfile.analytics -t fm-dashboard .
+```
+
+### Module Layout
+
+```
+analytics/
+├── queries.py          # Parameterised SQL ranking queries (psycopg2)
+└── dashboard.py        # Streamlit entrypoint; charts rendered with Plotly
+
+Dockerfile.analytics    # Standalone Docker image for the dashboard
+```
+
+---
+
+## Dasboards

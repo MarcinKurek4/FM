@@ -19,6 +19,7 @@ asyncpg = ">=0.30"
 alembic = ">=1.14"
 psycopg = { version = ">=3.2", extras = ["binary"] }
 python-multipart = "^0.0.32"
+streamlit = "^1.58.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.3"
@@ -28,6 +29,13 @@ black = ">=25.0"
 isort = ">=5.13"
 flake8 = ">=7.2"
 aiosqlite = ">=0.20"
+
+
+[tool.poetry.group.analytics.dependencies]
+streamlit = "^1.58.0"
+plotly = "^6.8.0"
+psycopg2-binary = "^2.9.12"
+python-dotenv = "^1.2.2"
 
 [tool.black]
 line-length = 100
