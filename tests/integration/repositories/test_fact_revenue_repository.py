@@ -4,6 +4,7 @@ This module verifies that the repository correctly persists and retrieves
 revenue fact records with idempotency guarantees.
 """
 
+import datetime
 import uuid
 
 import pytest
@@ -43,20 +44,27 @@ async def test_bulk_insert_returns_inserted_count(
     fact_repo = FactRevenueRepository(async_session)
 
     movie = await movie_repo.upsert(dim_movie_dto_factory(imdb_id="tt1234567"))
-    date = await date_repo.upsert(dim_date_dto_factory(date_id=20040920))
+    date_one = await date_repo.upsert(dim_date_dto_factory(date_id=20040920))
+    date_two = await date_repo.upsert(
+        dim_date_dto_factory(
+            date_id=20040921,
+            date=datetime.date(2004, 9, 21),
+            day=21,
+        )
+    )
     distributor = await distributor_repo.upsert(dim_distributor_dto_factory())
     await async_session.commit()
 
     fact1 = fact_revenue_dto_factory(
         source_row_id=uuid.uuid4(),
         movie_id=movie.movie_id,
-        date_id=date.date_id,
+        date_id=date_one.date_id,
         distributor_id=distributor.distributor_id,
     )
     fact2 = fact_revenue_dto_factory(
         source_row_id=uuid.uuid4(),
         movie_id=movie.movie_id,
-        date_id=date.date_id,
+        date_id=date_two.date_id,
         distributor_id=distributor.distributor_id,
     )
 

@@ -114,10 +114,14 @@ class FactMovieRatingRepository:
             existing_current = await self.get_current_rating(dto.movie_id)
 
             if existing_current is not None:
-                existing_table = fact_movie_rating_dto_to_table(existing_current)
+                result = await self._session.execute(
+                    select(FactMovieRatingTable).where(
+                        FactMovieRatingTable.rating_id == existing_current.rating_id
+                    )
+                )
+                existing_table = result.scalar_one()
                 existing_table.is_current = False
                 existing_table.valid_to = dto.valid_from
-                self._session.add(existing_table)
                 await self._session.flush()
                 logger.debug(
                     "Closed previous rating record",

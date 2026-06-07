@@ -10,9 +10,12 @@ from collections.abc import AsyncGenerator
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import Integer
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel
 
+from src.models import dwh_tables as _dwh_tables  # noqa: F401 — register ORM metadata
 from src.models.dwh import (
     DimDateDto,
     DimDirectorDto,
@@ -24,6 +27,41 @@ from src.models.dwh import (
     FactRevenueDto,
 )
 
+_SQLITE_SCHEMA_MAP: dict[str, str | None] = {"dwh": None}
+
+_SQLITE_AUTOINCREMENT_TABLES: tuple[str, ...] = (
+    "dwh.dim_movie",
+    "dwh.fact_revenue",
+    "dwh.fact_movie_rating",
+)
+
+
+def _adapt_metadata_for_sqlite() -> None:
+    """Adjust ORM metadata for SQLite in-memory integration tests.
+
+    SQLite only generates ``AUTOINCREMENT`` values for ``INTEGER PRIMARY KEY``
+    columns, so BIGINT surrogate keys are rewritten to INTEGER.
+
+    PostgreSQL-specific constraints (``NULLS NOT DISTINCT``, partial unique
+    indexes) are removed because SQLite either rejects them or compiles them
+    into stricter equivalents that break SCD Type 2 test scenarios.
+    """
+    for table_key in _SQLITE_AUTOINCREMENT_TABLES:
+        table = SQLModel.metadata.tables[table_key]
+        for column in table.primary_key.columns:
+            if column.autoincrement:
+                column.type = Integer()
+
+    fact_revenue = SQLModel.metadata.tables["dwh.fact_revenue"]
+    for constraint in list(fact_revenue.constraints):
+        if constraint.name == "uq_fact_revenue_movie_date_distributor":
+            fact_revenue.constraints.discard(constraint)
+
+    fact_rating = SQLModel.metadata.tables["dwh.fact_movie_rating"]
+    for index in list(fact_rating.indexes):
+        if index.name == "uq_fact_movie_rating_movie_id_current":
+            fact_rating.indexes.discard(index)
+
 
 @pytest.fixture(scope="function")
 async def async_engine() -> AsyncGenerator[AsyncEngine, None]:
@@ -32,16 +70,30 @@ async def async_engine() -> AsyncGenerator[AsyncEngine, None]:
     Each test function receives a fresh engine with an independent in-memory
     database. Tables are created before the test runs and disposed after.
 
+    PostgreSQL ``dwh`` schema qualifiers are translated away because SQLite
+    does not support schemas.
+
     Yields:
         An ``AsyncEngine`` connected to an in-memory SQLite database.
     """
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        execution_options={"schema_translate_map": _SQLITE_SCHEMA_MAP},
     )
 
+    def _create_all_tables(sync_conn: object) -> None:
+        """Create DWH tables adapted for SQLite autoincrement semantics."""
+        from sqlalchemy.engine import Connection
+
+        assert isinstance(sync_conn, Connection)
+        _adapt_metadata_for_sqlite()
+        SQLModel.metadata.create_all(bind=sync_conn)
+
     async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
+        await conn.run_sync(_create_all_tables)
 
     yield engine
 
