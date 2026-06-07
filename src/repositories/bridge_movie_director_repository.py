@@ -1,0 +1,187 @@
+"""Repository implementation for the movie-director bridge table."""
+
+import time
+from collections.abc import Sequence
+
+from loguru import logger
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
+
+from src.models.dwh import BridgeMovieDirectorDto
+from src.models.dwh_tables import BridgeMovieDirectorTable
+from src.repositories.exceptions import IntegrityViolationError
+from src.utils.dwh_mappers import (
+    bridge_movie_director_dto_to_table,
+    bridge_movie_director_table_to_dto,
+)
+
+
+class BridgeMovieDirectorRepository:
+    """Repository for movie-director bridge persistence.
+
+    Satisfies ``BridgeMovieDirectorRepositoryProtocol`` structurally.
+
+    Attributes:
+        _session: Injected async database session.
+    """
+
+    __slots__ = ("_session",)
+
+    def __init__(self: "BridgeMovieDirectorRepository", session: AsyncSession) -> None:
+        """Initialise the repository with an async session.
+
+        Args:
+            session: Active async database session.
+        """
+        self._session = session
+
+    async def get_by_natural_key(
+        self: "BridgeMovieDirectorRepository",
+        movie_id: int,
+        director_id: int,
+    ) -> BridgeMovieDirectorDto | None:
+        """Retrieve an association by composite key.
+
+        Args:
+            movie_id: Foreign key to ``dim_movie``.
+            director_id: Foreign key to ``dim_director``.
+
+        Returns:
+            A populated DTO when the row exists, otherwise ``None``.
+        """
+        start = time.perf_counter()
+        logger.debug(
+            "Fetching movie-director bridge",
+            extra={"movie_id": movie_id, "director_id": director_id},
+        )
+
+        result = await self._session.execute(
+            select(BridgeMovieDirectorTable).where(
+                BridgeMovieDirectorTable.movie_id == movie_id,
+                BridgeMovieDirectorTable.director_id == director_id,
+            )
+        )
+        table = result.scalar_one_or_none()
+
+        duration_ms = (time.perf_counter() - start) * 1000
+        if table is None:
+            logger.debug(
+                "Movie-director bridge not found",
+                extra={
+                    "movie_id": movie_id,
+                    "director_id": director_id,
+                    "duration_ms": duration_ms,
+                },
+            )
+            return None
+
+        dto = bridge_movie_director_table_to_dto(table)
+        logger.debug(
+            "Movie-director bridge fetched",
+            extra={
+                "movie_id": movie_id,
+                "director_id": director_id,
+                "duration_ms": duration_ms,
+            },
+        )
+        return dto
+
+    async def upsert(
+        self: "BridgeMovieDirectorRepository",
+        dto: BridgeMovieDirectorDto,
+    ) -> tuple[BridgeMovieDirectorDto, bool]:
+        """Insert the association when absent; return existing row otherwise.
+
+        Args:
+            dto: Bridge row to persist.
+
+        Returns:
+            A tuple of ``(persisted_dto, inserted)`` where ``inserted`` is
+            ``True`` only when a new row was created.
+
+        Raises:
+            IntegrityViolationError: When a foreign key constraint is violated.
+        """
+        start = time.perf_counter()
+        existing = await self.get_by_natural_key(dto.movie_id, dto.director_id)
+        if existing is not None:
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.debug(
+                "Movie-director bridge already exists",
+                extra={
+                    "movie_id": dto.movie_id,
+                    "director_id": dto.director_id,
+                    "duration_ms": duration_ms,
+                },
+            )
+            return existing, False
+
+        try:
+            table = bridge_movie_director_dto_to_table(dto)
+            self._session.add(table)
+            await self._session.flush()
+            await self._session.refresh(table)
+        except IntegrityError as exc:
+            await self._session.rollback()
+            logger.error(
+                "Movie-director bridge insert integrity violation",
+                extra={
+                    "movie_id": dto.movie_id,
+                    "director_id": dto.director_id,
+                    "error": str(exc.orig),
+                },
+            )
+            raise IntegrityViolationError(
+                constraint_name=getattr(exc.orig, "constraint_name", None),
+                detail=str(exc.orig),
+            ) from exc
+
+        persisted = bridge_movie_director_table_to_dto(table)
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.debug(
+            "Movie-director bridge inserted",
+            extra={
+                "movie_id": persisted.movie_id,
+                "director_id": persisted.director_id,
+                "duration_ms": duration_ms,
+            },
+        )
+        return persisted, True
+
+    async def bulk_upsert(
+        self: "BridgeMovieDirectorRepository",
+        dtos: Sequence[BridgeMovieDirectorDto],
+    ) -> tuple[list[BridgeMovieDirectorDto], int]:
+        """Insert multiple associations idempotently.
+
+        Args:
+            dtos: Bridge rows to persist. May be empty.
+
+        Returns:
+            A tuple of ``(persisted_dtos, inserted_count)``.
+
+        Raises:
+            IntegrityViolationError: When any constraint is violated.
+        """
+        start = time.perf_counter()
+        count = len(dtos)
+        logger.debug("Bulk upserting movie-director bridges", extra={"count": count})
+
+        if count == 0:
+            return [], 0
+
+        persisted: list[BridgeMovieDirectorDto] = []
+        inserted_count = 0
+        for dto in dtos:
+            result, inserted = await self.upsert(dto)
+            persisted.append(result)
+            if inserted:
+                inserted_count += 1
+
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.debug(
+            "Movie-director bridges bulk upserted",
+            extra={"count": count, "inserted_count": inserted_count, "duration_ms": duration_ms},
+        )
+        return persisted, inserted_count

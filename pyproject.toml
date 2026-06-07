@@ -1,0 +1,53 @@
+[tool.poetry]
+name = "fm"
+version = "0.1.0"
+description = "Movie box office analytics pipeline — CSV ingestion, OMDb enrichment, dimensional model, ranking API."
+authors = ["Marcin Kurek <kurek.marcin4@wp.pl>"]
+readme = "README.md"
+packages = [{ include = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.14"
+fastapi = ">=0.115"
+uvicorn = { version = ">=0.34", extras = ["standard"] }
+pydantic-settings = ">=2.7"
+polars = ">=1.20"
+pandas = ">=2.2"
+httpx = ">=0.28"
+loguru = ">=0.7"
+sqlmodel = ">=0.0.22"
+asyncpg = ">=0.30"
+alembic = ">=1.14"
+psycopg = { version = ">=3.2", extras = ["binary"] }
+greenlet = "^3.5.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.3"
+pytest-asyncio = ">=0.25"
+pytest-cov = ">=6.0"
+black = ">=25.0"
+isort = ">=5.13"
+flake8 = ">=7.2"
+aiosqlite = ">=0.20"
+
+[tool.black]
+line-length = 100
+target-version = ["py314"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=src --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*"]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

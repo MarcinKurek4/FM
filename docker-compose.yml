@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:17
+    container_name: fm_db
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - fm_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fm_user} -d ${POSTGRES_DB:-fm}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fm_network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fm_app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - fm_network
+
+volumes:
+  fm_pgdata:
+
+networks:
+  fm_network:
+    driver: bridge
