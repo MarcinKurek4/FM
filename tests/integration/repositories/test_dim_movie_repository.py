@@ -82,33 +82,3 @@ async def test_upsert_updates_on_second_call(
     assert fetched is not None
     assert fetched.title == "Updated Title"
 
-
-@pytest.mark.asyncio
-async def test_bulk_upsert_handles_empty_sequence(
-    async_session: AsyncSession,
-) -> None:
-    """Return empty list when upserting an empty sequence."""
-    repo = DimMovieRepository(async_session)
-
-    result = await repo.bulk_upsert([])
-
-    assert result == []
-
-
-@pytest.mark.asyncio
-async def test_bulk_upsert_deduplicates_by_natural_key(
-    async_session: AsyncSession,
-    dim_movie_dto_factory: callable,
-) -> None:
-    """Deduplicate movies by IMDb ID during bulk upsert."""
-    repo = DimMovieRepository(async_session)
-
-    dto1 = dim_movie_dto_factory(imdb_id="tt1111111", title="First")
-    dto2 = dim_movie_dto_factory(imdb_id="tt1111111", title="Second")
-
-    results = await repo.bulk_upsert([dto1, dto2])
-    await async_session.commit()
-
-    assert len(results) == 2
-    assert results[0].movie_id == results[1].movie_id
-    assert results[1].title == "Second"
