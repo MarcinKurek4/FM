@@ -125,19 +125,25 @@ async def test_run_skips_insert_when_rating_unchanged() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_rate_limit_raises_omdb_api_error() -> None:
-    outcome = OmdbTitleFetchOutcome(
-        request_title="tt1375666",
-        movie=None,
-        error_reason=OMDB_RATE_LIMIT_ERROR_REASON,
-        error_message="Daily request limit reached!",
-    )
-    service, _ = _build_service(omdb_outcomes=[outcome])
+async def test_run_rate_limit_stops_with_partial_results() -> None:
+    movies = [_movie_dto(movie_id=1, imdb_id="tt1"), _movie_dto(movie_id=2, imdb_id="tt2")]
+    outcomes = [
+        OmdbTitleFetchOutcome(request_title="tt1", movie=_omdb_response(7.0, 100)),
+        OmdbTitleFetchOutcome(
+            request_title="tt2",
+            movie=None,
+            error_reason=OMDB_RATE_LIMIT_ERROR_REASON,
+            error_message="Daily request limit reached!",
+        ),
+    ]
+    service, mocks = _build_service(movies=movies, omdb_outcomes=outcomes)
 
-    with pytest.raises(OmdbApiError) as exc_info:
-        await service.run()
+    result = await service.run()
 
-    assert exc_info.value.status_code == 429
+    assert result.stopped_due_to_rate_limit is True
+    assert result.ratings_inserted == 1
+    assert result.omdb_calls_made == 2
+    mocks["fact_rating_repo"].insert_new_rating.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ Tests cover all six scenarios defined in ADR-0004:
 
 1. All CSV titles already in ``dim_movie`` — no OMDb call made.
 2. New title, OMDb returns a valid record — movie enriched and fact inserted.
-3. New title, OMDb returns HTTP 429 (rate limit) — ``OmdbApiError`` raised.
+3. New title, OMDb returns rate limit — enrichment stops; known titles still load.
 4. New title, OMDb returns HTTP 401 (unauthorized) — ``OmdbApiError`` raised.
 5. New title, OMDb returns no match — counted in ``titles_not_found_in_omdb``.
 6. Duplicate ``source_row_id`` in CSV — counted in ``facts_skipped_duplicate``.
@@ -258,23 +258,34 @@ async def test_run_new_title_omdb_success_enriches_movie_and_inserts_fact() -> N
 
 
 @pytest.mark.asyncio
-async def test_run_new_title_omdb_rate_limit_raises_omdb_api_error() -> None:
-    """OMDb returns rate-limit signal; OmdbApiError is raised with status 429."""
-    title = "Rate Limited Movie"
-    csv = _csv_bytes(title)
+async def test_run_rate_limit_still_loads_facts_for_known_titles() -> None:
+    """OMDb rate limit stops enrichment; rows with known dim_movie still insert."""
+    known_title = "Inception"
+    unknown_title = "Rate Limited Movie"
+    csv = (
+        f"id,date,title,revenue,theaters,distributor\n"
+        f"{uuid.uuid4()},{_DATE.isoformat()},{known_title},1000000,500,Distributor Inc\n"
+        f"{uuid.uuid4()},{_DATE.isoformat()},{unknown_title},2000000,600,Distributor Inc\n"
+    ).encode("utf-8")
     outcome = OmdbTitleFetchOutcome(
-        request_title=title,
+        request_title=unknown_title,
         movie=None,
         error_reason=OMDB_RATE_LIMIT_ERROR_REASON,
         error_message="Daily request limit reached!",
     )
-    service, _ = _build_service(title_map={}, omdb_outcome=outcome)
+    service, mocks = _build_service(
+        title_map={"INCEPTION": 1},
+        bulk_insert_return=1,
+        omdb_outcome=outcome,
+    )
 
-    with pytest.raises(OmdbApiError) as exc_info:
-        await service.run(csv)
+    result = await service.run(csv)
 
-    assert exc_info.value.status_code == 429
-    assert "limit" in exc_info.value.message.lower()
+    mocks["omdb_client"].fetch_by_title_detailed.assert_called_once_with(unknown_title)
+    assert result.stopped_due_to_rate_limit is True
+    assert result.movies_enriched_from_omdb == 0
+    assert result.facts_inserted == 1
+    assert result.rows_error_movie_not_found == 1
 
 
 @pytest.mark.asyncio
