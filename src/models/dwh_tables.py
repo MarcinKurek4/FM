@@ -254,15 +254,16 @@ class FactRevenueTable(SQLModel, table=True):
             index=True,
         ),
     )
-    distributor_id: int = Field(
+    distributor_id: int | None = Field(
+        default=None,
         foreign_key="dwh.dim_distributor.distributor_id",
-        nullable=False,
+        nullable=True,
         index=True,
     )
     revenue: Decimal = Field(
         sa_column=Column(Numeric(18, 2), nullable=False),
     )
-    theaters: int = Field(nullable=False)
+    theaters: int | None = Field(default=None, nullable=True)
     loaded_at: datetime.datetime = Field(nullable=False)
 
 

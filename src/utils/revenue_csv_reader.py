@@ -31,8 +31,6 @@ _CSV_SCHEMA: dict[str, pl.DataType] = {
     "distributor": pl.String,
 }
 
-_UNKNOWN_DISTRIBUTOR: str = "Unknown"
-
 
 def read_revenues_csv(path: Path) -> list[RawRevenueRow]:
     """Load and parse the revenues CSV into typed row objects.
@@ -40,8 +38,8 @@ def read_revenues_csv(path: Path) -> list[RawRevenueRow]:
     Uses a Polars ``LazyFrame`` for memory-efficient scanning. All rows are
     collected into memory as ``RawRevenueRow`` instances.
 
-    The sentinel distributor value ``"-"`` is mapped to ``None`` in
-    ``RawRevenueRow.distributor``.
+    Empty ``theaters`` and ``distributor`` CSV fields are stored as ``None``.
+    The sentinel distributor value ``"-"`` is also mapped to ``None``.
 
     Args:
         path: Path to the revenues CSV file.
@@ -65,21 +63,12 @@ def read_revenues_csv(path: Path) -> list[RawRevenueRow]:
     )
 
     rows: list[RawRevenueRow] = []
-    skipped_null = 0
     for record in frame.iter_rows(named=True):
         theaters_raw = record["theaters"]
-        if theaters_raw is None:
-            skipped_null += 1
-            logger.warning(
-                "Skipping revenue row with null theaters",
-                extra={"id": record["id"], "title": record["title"]},
-            )
-            continue
+        theaters: int | None = int(theaters_raw) if theaters_raw is not None else None
 
         distributor_raw: str | None = record["distributor"]
-        distributor: str | None = (
-            None if distributor_raw == MISSING_DISTRIBUTOR_SENTINEL else distributor_raw
-        )
+        distributor: str | None = _normalise_distributor(distributor_raw)
 
         rows.append(
             RawRevenueRow(
@@ -87,15 +76,9 @@ def read_revenues_csv(path: Path) -> list[RawRevenueRow]:
                 date=datetime.date.fromisoformat(record["date"]),
                 title=record["title"],
                 revenue=Decimal(record["revenue"]),
-                theaters=int(theaters_raw),
+                theaters=theaters,
                 distributor=distributor,
             )
-        )
-
-    if skipped_null:
-        logger.warning(
-            "Skipped rows with null theaters",
-            extra={"skipped_count": skipped_null, "path": str(path)},
         )
 
     logger.info(
@@ -105,26 +88,36 @@ def read_revenues_csv(path: Path) -> list[RawRevenueRow]:
     return rows
 
 
-def collect_unique_distributor_names(rows: list[RawRevenueRow]) -> set[str]:
-    """Return the set of effective distributor names from parsed rows.
+def _normalise_distributor(raw_value: str | None) -> str | None:
+    """Map empty or sentinel distributor CSV values to ``None``.
 
-    Rows where ``distributor`` is ``None`` (sentinel ``"-"``) contribute the
-    name ``"Unknown"`` to represent missing distributors.
+    Args:
+        raw_value: Raw distributor cell from the CSV.
+
+    Returns:
+        A trimmed distributor name, or ``None`` when the value is missing.
+    """
+    if raw_value is None:
+        return None
+    stripped = raw_value.strip()
+    if not stripped or stripped == MISSING_DISTRIBUTOR_SENTINEL:
+        return None
+    return stripped
+
+
+def collect_unique_distributor_names(rows: list[RawRevenueRow]) -> set[str]:
+    """Return distinct non-null distributor names from parsed rows.
 
     Args:
         rows: Parsed revenue rows.
 
     Returns:
-        Set of non-empty distributor name strings.
+        Set of distributor name strings present in the CSV.
 
     Example:
         names = collect_unique_distributor_names(rows)
-        assert "Unknown" in names
     """
-    names: set[str] = set()
-    for row in rows:
-        names.add(row.distributor if row.distributor is not None else _UNKNOWN_DISTRIBUTOR)
-    return names
+    return {row.distributor for row in rows if row.distributor is not None}
 
 
 def collect_unique_dates(rows: list[RawRevenueRow]) -> set[datetime.date]:
@@ -140,6 +133,3 @@ def collect_unique_dates(rows: list[RawRevenueRow]) -> set[datetime.date]:
         dates = collect_unique_dates(rows)
     """
     return {row.date for row in rows}
-
-
-UNKNOWN_DISTRIBUTOR_NAME: str = _UNKNOWN_DISTRIBUTOR

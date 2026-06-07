@@ -5,7 +5,6 @@ using an injected ``AsyncSession``.
 """
 
 import datetime
-import time
 from collections.abc import Sequence
 
 from loguru import logger
@@ -18,6 +17,7 @@ from src.models.dwh import DimDateDto
 from src.models.dwh_tables import DimDateTable
 from src.repositories.exceptions import IntegrityViolationError
 from src.utils.dwh_mappers import dim_date_dto_to_table, dim_date_table_to_dto
+from src.utils.timing import log_execution_time
 
 _UPSERT_UPDATE_COLUMNS: tuple[str, ...] = (
     "date",
@@ -53,6 +53,7 @@ class DimDateRepository:
         """
         self._session = session
 
+    @log_execution_time()
     async def get_by_id(self: "DimDateRepository", date_id: int) -> DimDateDto | None:
         """Retrieve a date by its surrogate key.
 
@@ -63,7 +64,6 @@ class DimDateRepository:
             A populated ``DimDateDto`` when the record exists, or ``None``
             when no date with the given ID is found.
         """
-        start = time.perf_counter()
         logger.debug("Fetching date by ID", extra={"date_id": date_id})
 
         result = await self._session.execute(
@@ -71,21 +71,21 @@ class DimDateRepository:
         )
         table = result.scalar_one_or_none()
 
-        duration_ms = (time.perf_counter() - start) * 1000
         if table is None:
             logger.debug(
                 "Date not found",
-                extra={"date_id": date_id, "duration_ms": duration_ms},
+                extra={"date_id": date_id},
             )
             return None
 
         dto = dim_date_table_to_dto(table)
         logger.debug(
             "Date fetched",
-            extra={"date_id": date_id, "duration_ms": duration_ms},
+            extra={"date_id": date_id},
         )
         return dto
 
+    @log_execution_time()
     async def get_by_natural_key(
         self: "DimDateRepository",
         date: str,
@@ -99,7 +99,6 @@ class DimDateRepository:
             A populated ``DimDateDto`` when the record exists, or ``None``
             when no date with the given value is found.
         """
-        start = time.perf_counter()
         logger.debug("Fetching date by natural key", extra={"date": date})
 
         parsed_date = datetime.date.fromisoformat(date)
@@ -108,21 +107,21 @@ class DimDateRepository:
         )
         table = result.scalar_one_or_none()
 
-        duration_ms = (time.perf_counter() - start) * 1000
         if table is None:
             logger.debug(
                 "Date not found",
-                extra={"date": date, "duration_ms": duration_ms},
+                extra={"date": date},
             )
             return None
 
         dto = dim_date_table_to_dto(table)
         logger.debug(
             "Date fetched",
-            extra={"date": date, "date_id": dto.date_id, "duration_ms": duration_ms},
+            extra={"date": date, "date_id": dto.date_id},
         )
         return dto
 
+    @log_execution_time()
     async def upsert(self: "DimDateRepository", dto: DimDateDto) -> DimDateDto:
         """Insert or update a date record.
 
@@ -135,7 +134,6 @@ class DimDateRepository:
         Raises:
             IntegrityViolationError: When a database constraint is violated.
         """
-        start = time.perf_counter()
         logger.debug("Upserting date", extra={"date_id": dto.date_id})
 
         try:
@@ -170,13 +168,13 @@ class DimDateRepository:
             ) from exc
 
         persisted = dim_date_table_to_dto(table)
-        duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(
             "Date upserted",
-            extra={"date_id": persisted.date_id, "duration_ms": duration_ms},
+            extra={"date_id": persisted.date_id},
         )
         return persisted
 
+    @log_execution_time()
     async def bulk_upsert(
         self: "DimDateRepository",
         dtos: Sequence[DimDateDto],
@@ -192,7 +190,6 @@ class DimDateRepository:
         Raises:
             IntegrityViolationError: When any constraint is violated.
         """
-        start = time.perf_counter()
         count = len(dtos)
         logger.debug("Bulk upserting dates", extra={"count": count})
 
@@ -225,10 +222,9 @@ class DimDateRepository:
                 detail=str(exc.orig),
             ) from exc
 
-        duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(
             "Dates bulk upserted",
-            extra={"count": count, "duration_ms": duration_ms},
+            extra={"count": count},
         )
         return list(dtos)
 

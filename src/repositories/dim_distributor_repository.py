@@ -4,9 +4,6 @@ This module provides concrete persistence operations for ``dwh.dim_distributor``
 using an injected ``AsyncSession``.
 """
 
-import time
-from collections.abc import Sequence
-
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +13,7 @@ from src.models.dwh import DimDistributorDto
 from src.models.dwh_tables import DimDistributorTable
 from src.repositories.exceptions import IntegrityViolationError
 from src.utils.dwh_mappers import dim_distributor_dto_to_table, dim_distributor_table_to_dto
+from src.utils.timing import log_execution_time
 
 
 class DimDistributorRepository:
@@ -37,6 +35,7 @@ class DimDistributorRepository:
         """
         self._session = session
 
+    @log_execution_time()
     async def get_by_id(
         self: "DimDistributorRepository",
         distributor_id: int,
@@ -50,7 +49,6 @@ class DimDistributorRepository:
             A populated ``DimDistributorDto`` when the record exists, or
             ``None`` when no distributor with the given ID is found.
         """
-        start = time.perf_counter()
         logger.debug("Fetching distributor by ID", extra={"distributor_id": distributor_id})
 
         result = await self._session.execute(
@@ -60,21 +58,21 @@ class DimDistributorRepository:
         )
         table = result.scalar_one_or_none()
 
-        duration_ms = (time.perf_counter() - start) * 1000
         if table is None:
             logger.debug(
                 "Distributor not found",
-                extra={"distributor_id": distributor_id, "duration_ms": duration_ms},
+                extra={"distributor_id": distributor_id},
             )
             return None
 
         dto = dim_distributor_table_to_dto(table)
         logger.debug(
             "Distributor fetched",
-            extra={"distributor_id": distributor_id, "duration_ms": duration_ms},
+            extra={"distributor_id": distributor_id},
         )
         return dto
 
+    @log_execution_time()
     async def get_by_natural_key(
         self: "DimDistributorRepository",
         distributor_name: str,
@@ -88,7 +86,6 @@ class DimDistributorRepository:
             A populated ``DimDistributorDto`` when the record exists, or
             ``None`` when no distributor with the given name is found.
         """
-        start = time.perf_counter()
         logger.debug("Fetching distributor by name", extra={"distributor_name": distributor_name})
 
         result = await self._session.execute(
@@ -98,11 +95,10 @@ class DimDistributorRepository:
         )
         table = result.scalar_one_or_none()
 
-        duration_ms = (time.perf_counter() - start) * 1000
         if table is None:
             logger.debug(
                 "Distributor not found",
-                extra={"distributor_name": distributor_name, "duration_ms": duration_ms},
+                extra={"distributor_name": distributor_name},
             )
             return None
 
@@ -112,11 +108,11 @@ class DimDistributorRepository:
             extra={
                 "distributor_name": distributor_name,
                 "distributor_id": dto.distributor_id,
-                "duration_ms": duration_ms,
             },
         )
         return dto
 
+    @log_execution_time()
     async def upsert(
         self: "DimDistributorRepository",
         dto: DimDistributorDto,
@@ -133,7 +129,6 @@ class DimDistributorRepository:
         Raises:
             IntegrityViolationError: When a database constraint is violated.
         """
-        start = time.perf_counter()
         logger.debug("Upserting distributor", extra={"distributor_name": dto.distributor_name})
 
         existing = await self.get_by_natural_key(dto.distributor_name)
@@ -168,48 +163,11 @@ class DimDistributorRepository:
             ) from exc
 
         persisted = dim_distributor_table_to_dto(table)
-        duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(
             "Distributor upserted",
             extra={
                 "distributor_name": persisted.distributor_name,
                 "distributor_id": persisted.distributor_id,
-                "duration_ms": duration_ms,
             },
-        )
-        return persisted
-
-    async def bulk_upsert(
-        self: "DimDistributorRepository",
-        dtos: Sequence[DimDistributorDto],
-    ) -> list[DimDistributorDto]:
-        """Insert or update multiple distributor records in a single transaction.
-
-        Args:
-            dtos: Sequence of distributor records to persist. May be empty.
-
-        Returns:
-            List of persisted ``DimDistributorDto`` instances with
-            ``distributor_id`` fields populated.
-
-        Raises:
-            IntegrityViolationError: When any constraint is violated.
-        """
-        start = time.perf_counter()
-        count = len(dtos)
-        logger.debug("Bulk upserting distributors", extra={"count": count})
-
-        if count == 0:
-            return []
-
-        persisted: list[DimDistributorDto] = []
-        for dto in dtos:
-            result = await self.upsert(dto)
-            persisted.append(result)
-
-        duration_ms = (time.perf_counter() - start) * 1000
-        logger.debug(
-            "Distributors bulk upserted",
-            extra={"count": count, "duration_ms": duration_ms},
         )
         return persisted

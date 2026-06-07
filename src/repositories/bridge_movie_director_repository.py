@@ -1,6 +1,5 @@
 """Repository implementation for the movie-director bridge table."""
 
-import time
 from collections.abc import Sequence
 
 from loguru import logger
@@ -15,6 +14,7 @@ from src.utils.dwh_mappers import (
     bridge_movie_director_dto_to_table,
     bridge_movie_director_table_to_dto,
 )
+from src.utils.timing import log_execution_time
 
 
 class BridgeMovieDirectorRepository:
@@ -36,6 +36,7 @@ class BridgeMovieDirectorRepository:
         """
         self._session = session
 
+    @log_execution_time()
     async def get_by_natural_key(
         self: "BridgeMovieDirectorRepository",
         movie_id: int,
@@ -50,7 +51,6 @@ class BridgeMovieDirectorRepository:
         Returns:
             A populated DTO when the row exists, otherwise ``None``.
         """
-        start = time.perf_counter()
         logger.debug(
             "Fetching movie-director bridge",
             extra={"movie_id": movie_id, "director_id": director_id},
@@ -64,14 +64,12 @@ class BridgeMovieDirectorRepository:
         )
         table = result.scalar_one_or_none()
 
-        duration_ms = (time.perf_counter() - start) * 1000
         if table is None:
             logger.debug(
                 "Movie-director bridge not found",
                 extra={
                     "movie_id": movie_id,
                     "director_id": director_id,
-                    "duration_ms": duration_ms,
                 },
             )
             return None
@@ -82,11 +80,11 @@ class BridgeMovieDirectorRepository:
             extra={
                 "movie_id": movie_id,
                 "director_id": director_id,
-                "duration_ms": duration_ms,
             },
         )
         return dto
 
+    @log_execution_time()
     async def upsert(
         self: "BridgeMovieDirectorRepository",
         dto: BridgeMovieDirectorDto,
@@ -103,16 +101,13 @@ class BridgeMovieDirectorRepository:
         Raises:
             IntegrityViolationError: When a foreign key constraint is violated.
         """
-        start = time.perf_counter()
         existing = await self.get_by_natural_key(dto.movie_id, dto.director_id)
         if existing is not None:
-            duration_ms = (time.perf_counter() - start) * 1000
             logger.debug(
                 "Movie-director bridge already exists",
                 extra={
                     "movie_id": dto.movie_id,
                     "director_id": dto.director_id,
-                    "duration_ms": duration_ms,
                 },
             )
             return existing, False
@@ -138,17 +133,16 @@ class BridgeMovieDirectorRepository:
             ) from exc
 
         persisted = bridge_movie_director_table_to_dto(table)
-        duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(
             "Movie-director bridge inserted",
             extra={
                 "movie_id": persisted.movie_id,
                 "director_id": persisted.director_id,
-                "duration_ms": duration_ms,
             },
         )
         return persisted, True
 
+    @log_execution_time()
     async def bulk_upsert(
         self: "BridgeMovieDirectorRepository",
         dtos: Sequence[BridgeMovieDirectorDto],
@@ -164,7 +158,6 @@ class BridgeMovieDirectorRepository:
         Raises:
             IntegrityViolationError: When any constraint is violated.
         """
-        start = time.perf_counter()
         count = len(dtos)
         logger.debug("Bulk upserting movie-director bridges", extra={"count": count})
 
@@ -179,9 +172,8 @@ class BridgeMovieDirectorRepository:
             if inserted:
                 inserted_count += 1
 
-        duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(
             "Movie-director bridges bulk upserted",
-            extra={"count": count, "inserted_count": inserted_count, "duration_ms": duration_ms},
+            extra={"count": count, "inserted_count": inserted_count},
         )
         return persisted, inserted_count

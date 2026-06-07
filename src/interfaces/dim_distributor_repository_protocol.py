@@ -4,7 +4,6 @@ Consumers depend on ``DimDistributorRepositoryProtocol`` rather than the
 concrete repository implementation.
 """
 
-from collections.abc import Sequence
 from typing import Protocol
 
 from src.models.dwh import DimDistributorDto
@@ -13,9 +12,9 @@ from src.models.dwh import DimDistributorDto
 class DimDistributorRepositoryProtocol(Protocol):
     """Structural interface for distributor dimension persistence.
 
-    The ETL pipeline should pre-seed an ``"Unknown"`` distributor record
-    (with ``distributor_id = 0``) to handle source CSV rows where the
-    distributor field contains the sentinel value ``"-"``.
+    Rows with a missing distributor in the source CSV store ``NULL`` in
+    ``fact_revenue.distributor_id`` instead of referencing a placeholder
+    dimension record.
     """
 
     async def get_by_id(
@@ -68,27 +67,5 @@ class DimDistributorRepositoryProtocol(Protocol):
 
         Raises:
             IntegrityViolationError: When a database constraint is violated.
-        """
-        ...
-
-    async def bulk_upsert(
-        self: "DimDistributorRepositoryProtocol",
-        dtos: Sequence[DimDistributorDto],
-    ) -> list[DimDistributorDto]:
-        """Insert or update multiple distributor records in a single transaction.
-
-        Each DTO is upserted by its ``distributor_name`` natural key.
-        Existing records are updated; new records are inserted.
-
-        Args:
-            dtos: Sequence of distributor records to persist. May be empty.
-
-        Returns:
-            List of persisted ``DimDistributorDto`` instances with
-            ``distributor_id`` fields populated. The order matches the
-            input order.
-
-        Raises:
-            IntegrityViolationError: When any constraint is violated.
         """
         ...

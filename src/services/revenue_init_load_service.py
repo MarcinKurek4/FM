@@ -23,7 +23,6 @@ Usage::
 
 import datetime
 import json
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,8 +35,8 @@ from src.interfaces.fact_revenue_repository_protocol import FactRevenueRepositor
 from src.models.dwh import DimDateDto, DimDistributorDto, FactRevenueDto
 from src.models.raw_revenues import RawRevenueRow
 from src.utils.dim_date_builder import build_dim_date_dto, compute_date_id
+from src.utils.timing import log_execution_time
 from src.utils.revenue_csv_reader import (
-    UNKNOWN_DISTRIBUTOR_NAME,
     collect_unique_dates,
     collect_unique_distributor_names,
     read_revenues_csv,
@@ -76,7 +75,7 @@ class RevenueInitLoadResult:
     facts_skipped_duplicate: int
     rows_error_movie_not_found: int
     error_log_path: Path | None
-    duration_ms: float
+    duration_ms: float = 0.0
 
 
 class RevenueInitLoadService:
@@ -136,6 +135,7 @@ class RevenueInitLoadService:
         self._revenues_csv_path = revenues_csv_path or DEFAULT_REVENUES_CSV
         self._errorlog_path = errorlog_path or DEFAULT_ERRORLOG_PATH
 
+    @log_execution_time(inject_duration_ms=True)
     async def run(self: "RevenueInitLoadService") -> RevenueInitLoadResult:
         """Execute the full revenue init load pipeline.
 
@@ -146,7 +146,6 @@ class RevenueInitLoadService:
             FileNotFoundError: When the revenues CSV is missing.
             ValueError: When the CSV contains unparseable rows.
         """
-        wall_start = time.perf_counter()
         logger.info(
             "Starting revenue init load",
             extra={"csv_path": str(self._revenues_csv_path)},
@@ -165,7 +164,6 @@ class RevenueInitLoadService:
         inserted, skipped = await self._insert_facts(facts)
         error_log_path = _write_error_log(errors, self._errorlog_path)
 
-        duration_ms = (time.perf_counter() - wall_start) * 1000
         result = RevenueInitLoadResult(
             distributors_upserted=distributors_upserted,
             dates_created=dates_created,
@@ -173,7 +171,6 @@ class RevenueInitLoadService:
             facts_skipped_duplicate=skipped,
             rows_error_movie_not_found=len(errors),
             error_log_path=error_log_path,
-            duration_ms=duration_ms,
         )
         logger.info(
             "Revenue init load finished",
@@ -184,7 +181,6 @@ class RevenueInitLoadService:
                 "facts_skipped_duplicate": result.facts_skipped_duplicate,
                 "rows_error_movie_not_found": result.rows_error_movie_not_found,
                 "error_log_path": str(result.error_log_path) if result.error_log_path else None,
-                "duration_ms": result.duration_ms,
             },
         )
         return result
@@ -334,23 +330,23 @@ def _resolve_rows(
             )
             continue
 
-        effective_distributor = (
-            row.distributor if row.distributor is not None else UNKNOWN_DISTRIBUTOR_NAME
-        )
-        distributor_id = distributor_map.get(effective_distributor)
-        if distributor_id is None:
-            errors.append(
-                {
-                    "source_row_id": str(row.row_id),
-                    "date": row.date.isoformat(),
-                    "title": row.title,
-                    "revenue": str(row.revenue),
-                    "theaters": row.theaters,
-                    "distributor": row.distributor,
-                    "reason": "distributor_not_resolved",
-                }
-            )
-            continue
+        if row.distributor is None:
+            distributor_id = None
+        else:
+            distributor_id = distributor_map.get(row.distributor)
+            if distributor_id is None:
+                errors.append(
+                    {
+                        "source_row_id": str(row.row_id),
+                        "date": row.date.isoformat(),
+                        "title": row.title,
+                        "revenue": str(row.revenue),
+                        "theaters": row.theaters,
+                        "distributor": row.distributor,
+                        "reason": "distributor_not_resolved",
+                    }
+                )
+                continue
 
         date_id = date_map.get(row.date)
         if date_id is None:

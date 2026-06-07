@@ -154,10 +154,6 @@ class DimDistributorDto:
     Represents a single film distribution company. The natural key is
     ``distributor_name`` (unique).
 
-    When the source CSV contains the sentinel value ``"-"`` (indicating
-    unknown distributor), the ETL pipeline should reference a pre-seeded
-    ``"Unknown"`` record with ``distributor_id = 0``.
-
     Attributes:
         distributor_id: Surrogate primary key. ``None`` for new records
             before insert.
@@ -347,10 +343,12 @@ class FactRevenueDto:
             idempotency.
         movie_id: Foreign key to ``dwh.dim_movie`` (BIGINT).
         date_id: Foreign key to ``dwh.dim_date`` (BIGINT in YYYYMMDD format).
-        distributor_id: Foreign key to ``dwh.dim_distributor``.
+        distributor_id: Foreign key to ``dwh.dim_distributor``, or ``None``
+            when the source CSV omits distributor information.
         revenue: Box office revenue in USD for the given date. Stored as
             ``NUMERIC(18, 2)``.
-        theaters: Number of theater screens showing the film on that date.
+        theaters: Number of theater screens showing the film on that date,
+            or ``None`` when the source CSV omits theater counts.
         loaded_at: Timestamp when this fact record was inserted.
 
     Example:
@@ -370,9 +368,9 @@ class FactRevenueDto:
     source_row_id: uuid.UUID
     movie_id: int
     date_id: int
-    distributor_id: int
+    distributor_id: int | None
     revenue: Decimal
-    theaters: int
+    theaters: int | None
     loaded_at: datetime.datetime
 
 

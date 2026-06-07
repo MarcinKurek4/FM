@@ -19,8 +19,6 @@ from functools import lru_cache
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
-
 from src.config.settings import get_settings
 
 
@@ -114,31 +112,6 @@ class DbSessionFactory:
             except Exception:
                 await session.rollback()
                 raise
-
-    async def create_tables(self: "DbSessionFactory") -> None:
-        """Create all SQLModel tables in the database.
-
-        This method is intended for local development and testing. In
-        production, schema management is handled exclusively via Alembic
-        migrations.
-
-        All tables registered with ``SQLModel.metadata`` are created if they
-        do not already exist. Existing tables are not modified.
-        """
-        logger.info("Creating database tables")
-        async with self._engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-        logger.info("Database tables created")
-
-    async def close(self: "DbSessionFactory") -> None:
-        """Close the async engine and release all connections.
-
-        This method should be called during application shutdown to ensure
-        all database connections are cleanly closed.
-        """
-        logger.info("Closing database session factory")
-        await self._engine.dispose()
-        logger.info("Database session factory closed")
 
 
 @lru_cache(maxsize=1)

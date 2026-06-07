@@ -227,9 +227,9 @@ def upgrade() -> None:
         sa.Column("source_row_id", sa.Uuid(), nullable=False),
         sa.Column("movie_id", sa.BigInteger(), nullable=False),
         sa.Column("date_id", sa.BigInteger(), nullable=False),
-        sa.Column("distributor_id", sa.Integer(), nullable=False),
+        sa.Column("distributor_id", sa.Integer(), nullable=True),
         sa.Column("revenue", sa.Numeric(precision=18, scale=2), nullable=False),
-        sa.Column("theaters", sa.Integer(), nullable=False),
+        sa.Column("theaters", sa.Integer(), nullable=True),
         sa.Column("loaded_at", sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(
             ["date_id"],

@@ -4,7 +4,6 @@ Consumers depend on ``DimDirectorRepositoryProtocol`` rather than the
 concrete repository implementation.
 """
 
-from collections.abc import Sequence
 from typing import Protocol
 
 from src.models.dwh import DimDirectorDto
@@ -69,27 +68,5 @@ class DimDirectorRepositoryProtocol(Protocol):
 
         Raises:
             IntegrityViolationError: When a database constraint is violated.
-        """
-        ...
-
-    async def bulk_upsert(
-        self: "DimDirectorRepositoryProtocol",
-        dtos: Sequence[DimDirectorDto],
-    ) -> list[DimDirectorDto]:
-        """Insert or update multiple director records in a single transaction.
-
-        Each DTO is upserted by its ``director_name`` natural key. Existing
-        records are updated; new records are inserted.
-
-        Args:
-            dtos: Sequence of director records to persist. May be empty.
-
-        Returns:
-            List of persisted ``DimDirectorDto`` instances with
-            ``director_id`` fields populated. The order matches the input
-            order.
-
-        Raises:
-            IntegrityViolationError: When any constraint is violated.
         """
         ...

@@ -4,9 +4,6 @@ This module provides concrete persistence operations for ``dwh.dim_director``
 using an injected ``AsyncSession``.
 """
 
-import time
-from collections.abc import Sequence
-
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +13,7 @@ from src.models.dwh import DimDirectorDto
 from src.models.dwh_tables import DimDirectorTable
 from src.repositories.exceptions import IntegrityViolationError
 from src.utils.dwh_mappers import dim_director_dto_to_table, dim_director_table_to_dto
+from src.utils.timing import log_execution_time
 
 
 class DimDirectorRepository:
@@ -37,6 +35,7 @@ class DimDirectorRepository:
         """
         self._session = session
 
+    @log_execution_time()
     async def get_by_id(self: "DimDirectorRepository", director_id: int) -> DimDirectorDto | None:
         """Retrieve a director by its surrogate key.
 
@@ -47,7 +46,6 @@ class DimDirectorRepository:
             A populated ``DimDirectorDto`` when the record exists, or
             ``None`` when no director with the given ID is found.
         """
-        start = time.perf_counter()
         logger.debug("Fetching director by ID", extra={"director_id": director_id})
 
         result = await self._session.execute(
@@ -55,21 +53,21 @@ class DimDirectorRepository:
         )
         table = result.scalar_one_or_none()
 
-        duration_ms = (time.perf_counter() - start) * 1000
         if table is None:
             logger.debug(
                 "Director not found",
-                extra={"director_id": director_id, "duration_ms": duration_ms},
+                extra={"director_id": director_id},
             )
             return None
 
         dto = dim_director_table_to_dto(table)
         logger.debug(
             "Director fetched",
-            extra={"director_id": director_id, "duration_ms": duration_ms},
+            extra={"director_id": director_id},
         )
         return dto
 
+    @log_execution_time()
     async def get_by_natural_key(
         self: "DimDirectorRepository",
         director_name: str,
@@ -83,7 +81,6 @@ class DimDirectorRepository:
             A populated ``DimDirectorDto`` when the record exists, or
             ``None`` when no director with the given name is found.
         """
-        start = time.perf_counter()
         logger.debug("Fetching director by name", extra={"director_name": director_name})
 
         result = await self._session.execute(
@@ -91,11 +88,10 @@ class DimDirectorRepository:
         )
         table = result.scalar_one_or_none()
 
-        duration_ms = (time.perf_counter() - start) * 1000
         if table is None:
             logger.debug(
                 "Director not found",
-                extra={"director_name": director_name, "duration_ms": duration_ms},
+                extra={"director_name": director_name},
             )
             return None
 
@@ -105,11 +101,11 @@ class DimDirectorRepository:
             extra={
                 "director_name": director_name,
                 "director_id": dto.director_id,
-                "duration_ms": duration_ms,
             },
         )
         return dto
 
+    @log_execution_time()
     async def upsert(self: "DimDirectorRepository", dto: DimDirectorDto) -> DimDirectorDto:
         """Insert or update a director record.
 
@@ -123,7 +119,6 @@ class DimDirectorRepository:
         Raises:
             IntegrityViolationError: When a database constraint is violated.
         """
-        start = time.perf_counter()
         logger.debug("Upserting director", extra={"director_name": dto.director_name})
 
         existing = await self.get_by_natural_key(dto.director_name)
@@ -158,48 +153,11 @@ class DimDirectorRepository:
             ) from exc
 
         persisted = dim_director_table_to_dto(table)
-        duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(
             "Director upserted",
             extra={
                 "director_name": persisted.director_name,
                 "director_id": persisted.director_id,
-                "duration_ms": duration_ms,
             },
-        )
-        return persisted
-
-    async def bulk_upsert(
-        self: "DimDirectorRepository",
-        dtos: Sequence[DimDirectorDto],
-    ) -> list[DimDirectorDto]:
-        """Insert or update multiple director records in a single transaction.
-
-        Args:
-            dtos: Sequence of director records to persist. May be empty.
-
-        Returns:
-            List of persisted ``DimDirectorDto`` instances with
-            ``director_id`` fields populated.
-
-        Raises:
-            IntegrityViolationError: When any constraint is violated.
-        """
-        start = time.perf_counter()
-        count = len(dtos)
-        logger.debug("Bulk upserting directors", extra={"count": count})
-
-        if count == 0:
-            return []
-
-        persisted: list[DimDirectorDto] = []
-        for dto in dtos:
-            result = await self.upsert(dto)
-            persisted.append(result)
-
-        duration_ms = (time.perf_counter() - start) * 1000
-        logger.debug(
-            "Directors bulk upserted",
-            extra={"count": count, "duration_ms": duration_ms},
         )
         return persisted

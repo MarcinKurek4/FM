@@ -349,27 +349,32 @@ This endpoint refreshes IMDb ratings for every movie in `dim_movie`. It uses
 the OMDb API, looks up each movie by `imdb_id` when available and by title
 otherwise, compares the fetched rating and vote count with the current
 `fact_movie_rating` row, and inserts a new SCD Type 2 snapshot only when the
-values changed. If the rating is unchanged, no new row is inserted. OMDb
-authorization failures and daily quota failures return HTTP 422.
+values changed. If the rating is unchanged, no new row is inserted. When the
+OMDb daily quota is exhausted, already-fetched ratings are persisted and the
+response includes ``stopped_due_to_rate_limit=true``. An invalid API key
+returns HTTP 422.
 
 ```mermaid
 flowchart TD
     Request["GET /api/v1/ratings"]
     LoadMovies["Load all movies from dim_movie"]
     FetchOMDb["Fetch current rating from OMDb"]
-    FatalError{"Unauthorized or rate-limited?"}
+    FatalError{"Invalid API key?"}
+    RateLimit{"Daily quota exhausted?"}
     Compare["Compare with current fact_movie_rating"]
     Changed{"Rating or votes changed?"}
     Insert["Insert new SCD Type 2 snapshot"]
     Skip["Skip unchanged rating"]
-    Response["Return aggregate counters"]
+    Response["Return aggregate counters with stopped_due_to_rate_limit"]
     Error422["Return HTTP 422"]
 
     Request --> LoadMovies
     LoadMovies --> FetchOMDb
     FetchOMDb --> FatalError
     FatalError -- yes --> Error422
-    FatalError -- no --> Compare
+    FatalError -- no --> RateLimit
+    RateLimit -- yes --> Response
+    RateLimit -- no --> Compare
     Compare --> Changed
     Changed -- yes --> Insert
     Changed -- no --> Skip
@@ -388,9 +393,11 @@ titles, it populates `dim_rated`, `dim_genre`, `dim_director`, `dim_movie`,
 `fact_movie_rating` snapshot before inserting revenue facts.
 
 Only new `fact_revenue` rows are loaded. Duplicate rows are skipped by
-`source_row_id`, unresolved movies are reported in the response counters, OMDb
-authorization and quota failures return HTTP 422, and invalid CSV input returns
-HTTP 400.
+`source_row_id`, and unresolved movies are reported in the response counters.
+When the OMDb daily quota is exhausted during title enrichment, rows whose
+titles are already in `dim_movie` are still loaded; the response includes
+``stopped_due_to_rate_limit=true``. An invalid API key returns HTTP 422; invalid
+CSV input returns HTTP 400.
 
 ```mermaid
 flowchart TD
@@ -402,11 +409,12 @@ flowchart TD
     LoadTitleMap["Load dim_movie title map"]
     MissingTitles{"Missing movie titles?"}
     FetchMissing["Fetch missing metadata from OMDb"]
-    FatalError{"Unauthorized or rate-limited?"}
+    FatalError{"Invalid API key?"}
+    RateLimit{"Daily quota exhausted?"}
     PersistMaster["Upsert dimensions, bridges, dim_movie, and rating snapshot"]
     ResolveFacts["Resolve fact foreign keys"]
     InsertFacts["Insert new fact_revenue rows"]
-    Response["Return inserted, skipped, and error counters"]
+    Response["Return counters with stopped_due_to_rate_limit"]
     Error400["Return HTTP 400"]
     Error422["Return HTTP 422"]
 
@@ -420,7 +428,9 @@ flowchart TD
     MissingTitles -- yes --> FetchMissing
     FetchMissing --> FatalError
     FatalError -- yes --> Error422
-    FatalError -- no --> PersistMaster
+    FatalError -- no --> RateLimit
+    RateLimit -- yes --> ResolveFacts
+    RateLimit -- no --> PersistMaster
     PersistMaster --> ResolveFacts
     MissingTitles -- no --> ResolveFacts
     ResolveFacts --> InsertFacts

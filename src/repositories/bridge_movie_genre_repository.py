@@ -1,6 +1,5 @@
 """Repository implementation for the movie-genre bridge table."""
 
-import time
 from collections.abc import Sequence
 
 from loguru import logger
@@ -12,6 +11,7 @@ from src.models.dwh import BridgeMovieGenreDto
 from src.models.dwh_tables import BridgeMovieGenreTable
 from src.repositories.exceptions import IntegrityViolationError
 from src.utils.dwh_mappers import bridge_movie_genre_dto_to_table, bridge_movie_genre_table_to_dto
+from src.utils.timing import log_execution_time
 
 
 class BridgeMovieGenreRepository:
@@ -33,6 +33,7 @@ class BridgeMovieGenreRepository:
         """
         self._session = session
 
+    @log_execution_time()
     async def get_by_natural_key(
         self: "BridgeMovieGenreRepository",
         movie_id: int,
@@ -47,7 +48,6 @@ class BridgeMovieGenreRepository:
         Returns:
             A populated DTO when the row exists, otherwise ``None``.
         """
-        start = time.perf_counter()
         logger.debug(
             "Fetching movie-genre bridge",
             extra={"movie_id": movie_id, "genre_id": genre_id},
@@ -61,21 +61,21 @@ class BridgeMovieGenreRepository:
         )
         table = result.scalar_one_or_none()
 
-        duration_ms = (time.perf_counter() - start) * 1000
         if table is None:
             logger.debug(
                 "Movie-genre bridge not found",
-                extra={"movie_id": movie_id, "genre_id": genre_id, "duration_ms": duration_ms},
+                extra={"movie_id": movie_id, "genre_id": genre_id},
             )
             return None
 
         dto = bridge_movie_genre_table_to_dto(table)
         logger.debug(
             "Movie-genre bridge fetched",
-            extra={"movie_id": movie_id, "genre_id": genre_id, "duration_ms": duration_ms},
+            extra={"movie_id": movie_id, "genre_id": genre_id},
         )
         return dto
 
+    @log_execution_time()
     async def upsert(
         self: "BridgeMovieGenreRepository",
         dto: BridgeMovieGenreDto,
@@ -92,16 +92,13 @@ class BridgeMovieGenreRepository:
         Raises:
             IntegrityViolationError: When a foreign key constraint is violated.
         """
-        start = time.perf_counter()
         existing = await self.get_by_natural_key(dto.movie_id, dto.genre_id)
         if existing is not None:
-            duration_ms = (time.perf_counter() - start) * 1000
             logger.debug(
                 "Movie-genre bridge already exists",
                 extra={
                     "movie_id": dto.movie_id,
                     "genre_id": dto.genre_id,
-                    "duration_ms": duration_ms,
                 },
             )
             return existing, False
@@ -127,17 +124,16 @@ class BridgeMovieGenreRepository:
             ) from exc
 
         persisted = bridge_movie_genre_table_to_dto(table)
-        duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(
             "Movie-genre bridge inserted",
             extra={
                 "movie_id": persisted.movie_id,
                 "genre_id": persisted.genre_id,
-                "duration_ms": duration_ms,
             },
         )
         return persisted, True
 
+    @log_execution_time()
     async def bulk_upsert(
         self: "BridgeMovieGenreRepository",
         dtos: Sequence[BridgeMovieGenreDto],
@@ -153,7 +149,6 @@ class BridgeMovieGenreRepository:
         Raises:
             IntegrityViolationError: When any constraint is violated.
         """
-        start = time.perf_counter()
         count = len(dtos)
         logger.debug("Bulk upserting movie-genre bridges", extra={"count": count})
 
@@ -168,9 +163,8 @@ class BridgeMovieGenreRepository:
             if inserted:
                 inserted_count += 1
 
-        duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(
             "Movie-genre bridges bulk upserted",
-            extra={"count": count, "inserted_count": inserted_count, "duration_ms": duration_ms},
+            extra={"count": count, "inserted_count": inserted_count},
         )
         return persisted, inserted_count

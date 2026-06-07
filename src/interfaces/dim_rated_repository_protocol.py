@@ -4,7 +4,6 @@ Consumers depend on ``DimRatedRepositoryProtocol`` rather than the concrete
 repository implementation.
 """
 
-from collections.abc import Sequence
 from typing import Protocol
 
 from src.models.dwh import DimRatedDto
@@ -66,26 +65,5 @@ class DimRatedRepositoryProtocol(Protocol):
 
         Raises:
             IntegrityViolationError: When a database constraint is violated.
-        """
-        ...
-
-    async def bulk_upsert(
-        self: "DimRatedRepositoryProtocol",
-        dtos: Sequence[DimRatedDto],
-    ) -> list[DimRatedDto]:
-        """Insert or update multiple rating records in a single transaction.
-
-        Each DTO is upserted by its ``rating_code`` natural key. Existing
-        records are updated; new records are inserted.
-
-        Args:
-            dtos: Sequence of rating records to persist. May be empty.
-
-        Returns:
-            List of persisted ``DimRatedDto`` instances with ``rated_id``
-            fields populated. The order matches the input order.
-
-        Raises:
-            IntegrityViolationError: When any constraint is violated.
         """
         ...

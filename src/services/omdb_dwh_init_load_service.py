@@ -17,7 +17,6 @@ Usage::
 """
 
 import datetime
-import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -47,6 +46,7 @@ from src.models.dwh import (
     FactMovieRatingDto,
 )
 from src.utils.omdb_json_reader import read_omdb_result_file, split_csv_field
+from src.utils.timing import log_execution_time
 from src.utils.rated_descriptions import get_rating_description
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
@@ -77,7 +77,7 @@ class OmdbDwhInitLoadResult:
     bridges_director_upserted: int
     ratings_inserted: int
     skipped_no_response: int
-    duration_ms: float
+    duration_ms: float = 0.0
 
 
 class OmdbDwhInitLoadService:
@@ -141,6 +141,7 @@ class OmdbDwhInitLoadService:
         self._fact_rating_repo = fact_rating_repo
         self._result_json_path = result_json_path or DEFAULT_OMDB_RESULT_JSON
 
+    @log_execution_time(inject_duration_ms=True)
     async def run(self: "OmdbDwhInitLoadService") -> OmdbDwhInitLoadResult:
         """Execute the full init load pipeline.
 
@@ -151,7 +152,6 @@ class OmdbDwhInitLoadService:
             FileNotFoundError: When the result JSON file is missing.
             ValueError: When the JSON structure is invalid.
         """
-        start = time.perf_counter()
         logger.info(
             "Starting OMDb DWH init load",
             extra={"result_path": str(self._result_json_path)},
@@ -173,7 +173,6 @@ class OmdbDwhInitLoadService:
         )
         ratings_inserted = await self._load_ratings(records, movie_map, now)
 
-        duration_ms = (time.perf_counter() - start) * 1000
         result = OmdbDwhInitLoadResult(
             rated_upserted=rated_upserted,
             genres_upserted=len(genre_map),
@@ -183,7 +182,6 @@ class OmdbDwhInitLoadService:
             bridges_director_upserted=bridges_director_upserted,
             ratings_inserted=ratings_inserted,
             skipped_no_response=skipped_no_response,
-            duration_ms=duration_ms,
         )
         logger.info(
             "OMDb DWH init load finished",
@@ -196,7 +194,6 @@ class OmdbDwhInitLoadService:
                 "bridges_director_upserted": result.bridges_director_upserted,
                 "ratings_inserted": result.ratings_inserted,
                 "skipped_no_response": result.skipped_no_response,
-                "duration_ms": result.duration_ms,
             },
         )
         return result

@@ -16,7 +16,6 @@ Usage::
 
 import asyncio
 import datetime
-import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
@@ -30,10 +29,10 @@ from src.interfaces.omdb_client_protocol import OmdbClientProtocol
 from src.models.dwh import DimMovieDto, FactMovieRatingDto
 from src.models.exceptions import OmdbApiError
 from src.models.omdb import OMDB_RATE_LIMIT_ERROR_REASON, OmdbMovieResponse, OmdbTitleFetchOutcome
+from src.utils.timing import log_execution_time
 
 _REQUEST_DELAY_SECONDS: float = 0.1
 _HTTP_STATUS_UNAUTHORIZED: int = 401
-_HTTP_STATUS_RATE_LIMIT: int = 429
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +46,8 @@ class MovieRatingsRefreshResult:
         ratings_unchanged: Movies whose fetched rating matched the current row.
         omdb_not_found: Movies where OMDb returned no match.
         omdb_errors: Non-fatal per-movie failures (request/validation errors).
+        stopped_due_to_rate_limit: ``True`` when the OMDb daily quota was hit
+            before every movie was processed.
         duration_ms: Wall-clock duration in milliseconds.
     """
 
@@ -56,7 +57,8 @@ class MovieRatingsRefreshResult:
     ratings_unchanged: int
     omdb_not_found: int
     omdb_errors: int
-    duration_ms: float
+    stopped_due_to_rate_limit: bool
+    duration_ms: float = 0.0
 
 
 class MovieRatingsRefreshService:
@@ -105,16 +107,18 @@ class MovieRatingsRefreshService:
         self._omdb_client = omdb_client
         self._request_delay_seconds = request_delay_seconds
 
+    @log_execution_time(inject_duration_ms=True)
     async def run(self: "MovieRatingsRefreshService") -> MovieRatingsRefreshResult:
         """Refresh ratings for every movie in ``dim_movie``.
 
         Returns:
-            Aggregate counts for the run.
+            Aggregate counts for the run. When the OMDb daily quota is
+            exhausted, already-fetched ratings are persisted and the result
+            reports ``stopped_due_to_rate_limit=True``.
 
         Raises:
-            OmdbApiError: When OMDb signals HTTP 401 or rate-limit exhaustion.
+            OmdbApiError: When OMDb signals an invalid or unauthorized API key.
         """
-        wall_start = time.perf_counter()
         logger.info("Starting movie ratings refresh from OMDb")
 
         movies = await self._dim_movie_repo.list_all_movies()
@@ -125,8 +129,12 @@ class MovieRatingsRefreshService:
         ratings_unchanged = 0
         omdb_not_found = 0
         omdb_errors = 0
+        stopped_due_to_rate_limit = False
 
         for index, movie in enumerate(movies):
+            if stopped_due_to_rate_limit:
+                break
+
             if movie.movie_id is None:
                 omdb_errors += 1
                 logger.warning(
@@ -138,7 +146,19 @@ class MovieRatingsRefreshService:
             outcome = await self._fetch_omdb(movie)
             omdb_calls += 1
 
-            _raise_on_fatal_omdb_error(outcome)
+            if outcome.error_reason == OMDB_RATE_LIMIT_ERROR_REASON:
+                stopped_due_to_rate_limit = True
+                logger.warning(
+                    "OMDb rate limit reached; stopping ratings refresh with partial results",
+                    extra={
+                        "processed_movies": omdb_calls,
+                        "total_movies": len(movies),
+                        "error_message": outcome.error_message,
+                    },
+                )
+                break
+
+            _raise_on_unauthorized_omdb_error(outcome)
 
             if outcome.movie is None or outcome.movie.imdb_rating is None:
                 if outcome.error_reason == "not_found":
@@ -169,7 +189,6 @@ class MovieRatingsRefreshService:
             if index < len(movies) - 1 and self._request_delay_seconds > 0:
                 await asyncio.sleep(self._request_delay_seconds)
 
-        duration_ms = (time.perf_counter() - wall_start) * 1000
         result = MovieRatingsRefreshResult(
             total_movies=len(movies),
             omdb_calls_made=omdb_calls,
@@ -177,7 +196,7 @@ class MovieRatingsRefreshService:
             ratings_unchanged=ratings_unchanged,
             omdb_not_found=omdb_not_found,
             omdb_errors=omdb_errors,
-            duration_ms=duration_ms,
+            stopped_due_to_rate_limit=stopped_due_to_rate_limit,
         )
         logger.info(
             "Movie ratings refresh finished",
@@ -188,7 +207,7 @@ class MovieRatingsRefreshService:
                 "ratings_unchanged": result.ratings_unchanged,
                 "omdb_not_found": result.omdb_not_found,
                 "omdb_errors": result.omdb_errors,
-                "duration_ms": result.duration_ms,
+                "stopped_due_to_rate_limit": result.stopped_due_to_rate_limit,
             },
         )
         return result
@@ -207,21 +226,15 @@ class MovieRatingsRefreshService:
         return await self._omdb_client.fetch_by_title_detailed(movie.title)
 
 
-def _raise_on_fatal_omdb_error(outcome: OmdbTitleFetchOutcome) -> None:
-    """Raise ``OmdbApiError`` when the outcome signals auth or quota failure.
+def _raise_on_unauthorized_omdb_error(outcome: OmdbTitleFetchOutcome) -> None:
+    """Raise ``OmdbApiError`` when the outcome signals an invalid API key.
 
     Args:
         outcome: OMDb fetch outcome for a single movie.
 
     Raises:
-        OmdbApiError: On rate-limit or unauthorized responses.
+        OmdbApiError: On unauthorized responses that are not rate-limit errors.
     """
-    if outcome.error_reason == OMDB_RATE_LIMIT_ERROR_REASON:
-        raise OmdbApiError(
-            status_code=_HTTP_STATUS_RATE_LIMIT,
-            message=outcome.error_message or "OMDb daily request limit reached.",
-        )
-
     if outcome.error_reason == "http_error":
         error_msg = outcome.error_message or ""
         if "401" in error_msg or "unauthorized" in error_msg.lower():

@@ -4,7 +4,6 @@ Consumers depend on ``FactMovieRatingRepositoryProtocol`` rather than the
 concrete repository implementation.
 """
 
-from collections.abc import Sequence
 from typing import Protocol
 
 from src.models.dwh import FactMovieRatingDto
@@ -77,27 +76,5 @@ class FactMovieRatingRepositoryProtocol(Protocol):
         Returns:
             List of ``FactMovieRatingDto`` instances, ordered from oldest
             to newest. May be empty if no ratings exist for the movie.
-        """
-        ...
-
-    async def bulk_insert(
-        self: "FactMovieRatingRepositoryProtocol",
-        dtos: Sequence[FactMovieRatingDto],
-    ) -> int:
-        """Insert multiple rating snapshots in a single transaction.
-
-        Each DTO is inserted as-is without SCD Type 2 logic. This method
-        is intended for initial data loading or historical backfill, not
-        for incremental updates.
-
-        Args:
-            dtos: Sequence of rating records to persist. May be empty.
-
-        Returns:
-            The number of rows actually inserted.
-
-        Raises:
-            IntegrityViolationError: When a foreign key constraint is
-                violated.
         """
         ...

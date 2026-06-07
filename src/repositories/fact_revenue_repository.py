@@ -4,7 +4,6 @@ This module provides concrete persistence operations for ``dwh.fact_revenue``
 using an injected ``AsyncSession``.
 """
 
-import time
 import uuid
 from collections.abc import Sequence
 
@@ -17,6 +16,7 @@ from src.models.dwh import FactRevenueDto
 from src.models.dwh_tables import FactRevenueTable
 from src.repositories.exceptions import IntegrityViolationError
 from src.utils.dwh_mappers import fact_revenue_dto_to_table, fact_revenue_table_to_dto
+from src.utils.timing import log_execution_time
 
 
 class FactRevenueRepository:
@@ -38,6 +38,7 @@ class FactRevenueRepository:
         """
         self._session = session
 
+    @log_execution_time()
     async def exists_by_source_row_id(
         self: "FactRevenueRepository",
         source_row_id: uuid.UUID,
@@ -51,7 +52,6 @@ class FactRevenueRepository:
             ``True`` when a record with the given ``source_row_id`` exists,
             ``False`` otherwise.
         """
-        start = time.perf_counter()
         logger.debug("Checking fact existence by source_row_id", extra={"source_row_id": str(source_row_id)})
 
         result = await self._session.execute(
@@ -61,13 +61,13 @@ class FactRevenueRepository:
         )
         exists = result.scalar_one_or_none() is not None
 
-        duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(
             "Fact existence checked",
-            extra={"source_row_id": str(source_row_id), "exists": exists, "duration_ms": duration_ms},
+            extra={"source_row_id": str(source_row_id), "exists": exists},
         )
         return exists
 
+    @log_execution_time()
     async def bulk_insert(
         self: "FactRevenueRepository",
         dtos: Sequence[FactRevenueDto],
@@ -88,7 +88,6 @@ class FactRevenueRepository:
             IntegrityViolationError: When a foreign key constraint is
                 violated.
         """
-        start = time.perf_counter()
         count = len(dtos)
         logger.debug("Bulk inserting facts", extra={"count": count})
 
@@ -116,18 +115,17 @@ class FactRevenueRepository:
                 detail=str(exc.orig),
             ) from exc
 
-        duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(
             "Facts bulk inserted",
             extra={
                 "total_count": count,
                 "inserted_count": inserted_count,
                 "skipped_count": count - inserted_count,
-                "duration_ms": duration_ms,
             },
         )
         return inserted_count
 
+    @log_execution_time()
     async def get_by_id(
         self: "FactRevenueRepository",
         revenue_id: int,
@@ -141,7 +139,6 @@ class FactRevenueRepository:
             A populated ``FactRevenueDto`` when the record exists, or
             ``None`` when no fact with the given ID is found.
         """
-        start = time.perf_counter()
         logger.debug("Fetching fact by ID", extra={"revenue_id": revenue_id})
 
         result = await self._session.execute(
@@ -149,17 +146,16 @@ class FactRevenueRepository:
         )
         table = result.scalar_one_or_none()
 
-        duration_ms = (time.perf_counter() - start) * 1000
         if table is None:
             logger.debug(
                 "Fact not found",
-                extra={"revenue_id": revenue_id, "duration_ms": duration_ms},
+                extra={"revenue_id": revenue_id},
             )
             return None
 
         dto = fact_revenue_table_to_dto(table)
         logger.debug(
             "Fact fetched",
-            extra={"revenue_id": revenue_id, "duration_ms": duration_ms},
+            extra={"revenue_id": revenue_id},
         )
         return dto

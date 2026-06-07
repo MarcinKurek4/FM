@@ -43,9 +43,10 @@ class RawRevenueRow:
         revenue: Box office revenue in USD for the given date. Stored as
             ``Decimal`` to preserve exactness for both integer and
             fractional monetary values present in the source.
-        theaters: Number of theater screens showing the film on that date.
+        theaters: Number of theater screens showing the film on that date,
+            or ``None`` when the CSV field is empty.
         distributor: Distribution company name, or ``None`` when the source
-            file contains the sentinel value ``"-"``.
+            file contains the sentinel value ``"-"`` or an empty field.
 
     Example:
         row = RawRevenueRow(
@@ -62,5 +63,5 @@ class RawRevenueRow:
     date: datetime.date
     title: str
     revenue: Decimal
-    theaters: int
+    theaters: int | None
     distributor: str | None

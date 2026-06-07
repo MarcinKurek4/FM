@@ -5,7 +5,6 @@ repository implementation. This keeps the service layer decoupled from the
 persistence layer and makes repositories trivial to stub in tests.
 """
 
-from collections.abc import Sequence
 from typing import Protocol
 
 from src.models.dwh import DimMovieDto
@@ -103,26 +102,5 @@ class DimMovieRepositoryProtocol(Protocol):
         Example:
             title_map = await repo.bulk_load_title_map()
             movie_id = title_map.get("INCEPTION")
-        """
-        ...
-
-    async def bulk_upsert(
-        self: "DimMovieRepositoryProtocol",
-        dtos: Sequence[DimMovieDto],
-    ) -> list[DimMovieDto]:
-        """Insert or update multiple movie records in a single transaction.
-
-        Each DTO is upserted by its ``imdb_id`` natural key. Existing records
-        are updated; new records are inserted.
-
-        Args:
-            dtos: Sequence of movie records to persist. May be empty.
-
-        Returns:
-            List of persisted ``DimMovieDto`` instances with ``movie_id``
-            fields populated. The order matches the input order.
-
-        Raises:
-            IntegrityViolationError: When any constraint is violated.
         """
         ...

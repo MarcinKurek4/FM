@@ -28,7 +28,6 @@ Usage::
 
 import datetime
 import tempfile
-import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -69,8 +68,8 @@ from src.models.raw_revenues import RawRevenueRow
 from src.utils.dim_date_builder import build_dim_date_dto, compute_date_id
 from src.utils.omdb_json_reader import split_csv_field
 from src.utils.rated_descriptions import get_rating_description
+from src.utils.timing import log_execution_time
 from src.utils.revenue_csv_reader import (
-    UNKNOWN_DISTRIBUTOR_NAME,
     collect_unique_dates,
     collect_unique_distributor_names,
     read_revenues_csv,
@@ -79,7 +78,6 @@ from src.utils.revenue_csv_reader import (
 _FACT_BATCH_SIZE: int = 500
 
 _HTTP_STATUS_UNAUTHORIZED: int = 401
-_HTTP_STATUS_RATE_LIMIT: int = 429
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +97,8 @@ class RevenueUploadEtlResult:
             be matched by the OMDb API and therefore have no ``dim_movie`` row.
         rows_error_movie_not_found: Number of CSV rows whose title could not be
             resolved to any ``dim_movie`` record after OMDb lookup.
+        stopped_due_to_rate_limit: ``True`` when OMDb enrichment stopped early
+            because the daily quota was exhausted.
         duration_ms: Wall-clock duration of the run in milliseconds.
     """
 
@@ -109,7 +109,8 @@ class RevenueUploadEtlResult:
     movies_enriched_from_omdb: int
     titles_not_found_in_omdb: int
     rows_error_movie_not_found: int
-    duration_ms: float
+    stopped_due_to_rate_limit: bool
+    duration_ms: float = 0.0
 
 
 class RevenueUploadEtlService:
@@ -119,9 +120,9 @@ class RevenueUploadEtlService:
     ``dim_movie``, the service fetches metadata from the OMDb API and persists
     all related dimension and bridge records before inserting the revenue facts.
 
-    If OMDb returns HTTP 401 (invalid API key) or HTTP 429 (daily quota
-    exhausted), ``OmdbApiError`` is raised immediately and the entire upload
-    is aborted. No partial data is committed.
+    When the OMDb daily quota is exhausted during title enrichment, already
+    resolved rows continue through fact loading. Only an invalid API key
+    aborts the entire upload.
 
     Attributes:
         _dim_distributor_repo: Distributor dimension repository.
@@ -208,6 +209,7 @@ class RevenueUploadEtlService:
         self._fact_rating_repo = fact_rating_repo
         self._omdb_client = omdb_client
 
+    @log_execution_time(inject_duration_ms=True)
     async def run(
         self: "RevenueUploadEtlService",
         csv_bytes: bytes,
@@ -221,12 +223,11 @@ class RevenueUploadEtlService:
             Summary counts and timing for the run.
 
         Raises:
-            OmdbApiError: When the OMDb API returns HTTP 401 or 429.
+            OmdbApiError: When the OMDb API returns an invalid API key.
             FileNotFoundError: When the temporary CSV file cannot be written.
             ValueError: When the CSV contains unparseable rows.
             OSError: On unexpected I/O failure.
         """
-        wall_start = time.perf_counter()
         logger.info("Starting incremental revenue upload ETL", extra={"csv_size_bytes": len(csv_bytes)})
 
         rows = _parse_csv_bytes(csv_bytes)
@@ -236,14 +237,15 @@ class RevenueUploadEtlService:
         dates_created = await self._ensure_dates(rows, now)
         title_map = await self._dim_movie_repo.bulk_load_title_map()
 
-        movies_enriched, titles_not_found = await self._enrich_missing_titles(rows, title_map, now)
+        movies_enriched, titles_not_found, stopped_due_to_rate_limit = (
+            await self._enrich_missing_titles(rows, title_map, now)
+        )
 
         date_map = _build_date_id_map(rows)
         facts, errors = _resolve_rows(rows, title_map, distributor_map, date_map, now)
 
         inserted, skipped = await self._insert_facts(facts)
 
-        duration_ms = (time.perf_counter() - wall_start) * 1000
         result = RevenueUploadEtlResult(
             facts_inserted=inserted,
             facts_skipped_duplicate=skipped,
@@ -252,7 +254,7 @@ class RevenueUploadEtlService:
             movies_enriched_from_omdb=movies_enriched,
             titles_not_found_in_omdb=titles_not_found,
             rows_error_movie_not_found=len(errors),
-            duration_ms=duration_ms,
+            stopped_due_to_rate_limit=stopped_due_to_rate_limit,
         )
         logger.info(
             "Incremental revenue upload ETL finished",
@@ -264,7 +266,7 @@ class RevenueUploadEtlService:
                 "movies_enriched_from_omdb": result.movies_enriched_from_omdb,
                 "titles_not_found_in_omdb": result.titles_not_found_in_omdb,
                 "rows_error_movie_not_found": result.rows_error_movie_not_found,
-                "duration_ms": result.duration_ms,
+                "stopped_due_to_rate_limit": result.stopped_due_to_rate_limit,
             },
         )
         return result
@@ -345,7 +347,7 @@ class RevenueUploadEtlService:
         rows: list[RawRevenueRow],
         title_map: dict[str, int],
         now: datetime.datetime,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, bool]:
         """Fetch OMDb metadata for titles absent from ``dim_movie``.
 
         Mutates ``title_map`` in place: after each successful OMDb fetch and
@@ -360,10 +362,11 @@ class RevenueUploadEtlService:
             now: Load timestamp for ``loaded_at``.
 
         Returns:
-            A tuple of ``(movies_enriched, titles_not_found_in_omdb)``.
+            A tuple of ``(movies_enriched, titles_not_found_in_omdb,
+            stopped_due_to_rate_limit)``.
 
         Raises:
-            OmdbApiError: When the OMDb API returns HTTP 401 or 429.
+            OmdbApiError: When the OMDb API returns an invalid API key.
         """
         missing_titles: set[str] = {
             row.title for row in rows if row.title.upper() not in title_map
@@ -371,7 +374,7 @@ class RevenueUploadEtlService:
 
         if not missing_titles:
             logger.info("All CSV titles resolved from dim_movie; no OMDb calls required")
-            return 0, 0
+            return 0, 0, False
 
         logger.info(
             "Fetching OMDb metadata for missing titles",
@@ -380,15 +383,25 @@ class RevenueUploadEtlService:
 
         enriched = 0
         not_found = 0
+        stopped_due_to_rate_limit = False
 
         for title in sorted(missing_titles):
+            if stopped_due_to_rate_limit:
+                break
+
             outcome = await self._omdb_client.fetch_by_title_detailed(title)
 
             if outcome.error_reason == OMDB_RATE_LIMIT_ERROR_REASON:
-                raise OmdbApiError(
-                    status_code=_HTTP_STATUS_RATE_LIMIT,
-                    message=outcome.error_message or "OMDb daily request limit reached.",
+                stopped_due_to_rate_limit = True
+                logger.warning(
+                    "OMDb rate limit reached; continuing upload for already resolved titles",
+                    extra={
+                        "enriched_before_stop": enriched,
+                        "remaining_missing_titles": len(missing_titles) - enriched - not_found,
+                        "error_message": outcome.error_message,
+                    },
                 )
+                break
 
             if outcome.error_reason == "http_error":
                 error_msg = outcome.error_message or ""
@@ -426,7 +439,7 @@ class RevenueUploadEtlService:
                     extra={"title": outcome.movie.title, "movie_id": movie_id},
                 )
 
-        return enriched, not_found
+        return enriched, not_found, stopped_due_to_rate_limit
 
     async def _insert_facts(
         self: "RevenueUploadEtlService",
@@ -641,23 +654,23 @@ def _resolve_rows(
             )
             continue
 
-        effective_distributor = (
-            row.distributor if row.distributor is not None else UNKNOWN_DISTRIBUTOR_NAME
-        )
-        distributor_id = distributor_map.get(effective_distributor)
-        if distributor_id is None:
-            errors.append(
-                {
-                    "source_row_id": str(row.row_id),
-                    "date": row.date.isoformat(),
-                    "title": row.title,
-                    "revenue": str(row.revenue),
-                    "theaters": row.theaters,
-                    "distributor": row.distributor,
-                    "reason": "distributor_not_resolved",
-                }
-            )
-            continue
+        if row.distributor is None:
+            distributor_id = None
+        else:
+            distributor_id = distributor_map.get(row.distributor)
+            if distributor_id is None:
+                errors.append(
+                    {
+                        "source_row_id": str(row.row_id),
+                        "date": row.date.isoformat(),
+                        "title": row.title,
+                        "revenue": str(row.revenue),
+                        "theaters": row.theaters,
+                        "distributor": row.distributor,
+                        "reason": "distributor_not_resolved",
+                    }
+                )
+                continue
 
         date_id = date_map.get(row.date)
         if date_id is None:

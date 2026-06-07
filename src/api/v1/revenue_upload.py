@@ -5,9 +5,9 @@ Exposes a single endpoint:
     POST /api/v1/revenue/upload
 
 Accepts a multipart CSV file upload, runs the incremental ETL pipeline,
-and returns a summary of inserted rows. If the OMDb API signals an
-authentication or rate-limit failure, the endpoint returns HTTP 422 with a
-structured error body.
+and returns a summary of inserted rows. When the OMDb daily quota is
+exhausted, rows that do not require further OMDb enrichment are still loaded.
+An invalid API key returns HTTP 422.
 
 Usage::
 
@@ -57,6 +57,8 @@ class RevenueUploadResponseDto(BaseModel):
         titles_not_found_in_omdb: Distinct CSV titles that OMDb could not match.
         rows_error_movie_not_found: CSV rows whose title could not be resolved
             to any ``dim_movie`` record after OMDb lookup.
+        stopped_due_to_rate_limit: ``True`` when OMDb enrichment stopped early
+            because the daily quota was exhausted.
         duration_ms: Wall-clock duration of the ETL run in milliseconds.
     """
 
@@ -67,6 +69,7 @@ class RevenueUploadResponseDto(BaseModel):
     movies_enriched_from_omdb: int
     titles_not_found_in_omdb: int
     rows_error_movie_not_found: int
+    stopped_due_to_rate_limit: bool
     duration_ms: float
 
 
@@ -96,7 +99,7 @@ async def upload_revenue_csv(
         A ``RevenueUploadResponseDto`` with row-count summaries.
 
     Raises:
-        HTTPException: HTTP 422 when the OMDb API returns 401 or 429.
+        HTTPException: HTTP 422 when the OMDb API key is invalid.
         HTTPException: HTTP 400 when the uploaded file cannot be parsed as CSV.
         HTTPException: HTTP 500 on unexpected internal failures.
     """
@@ -171,5 +174,6 @@ async def upload_revenue_csv(
         movies_enriched_from_omdb=result.movies_enriched_from_omdb,
         titles_not_found_in_omdb=result.titles_not_found_in_omdb,
         rows_error_movie_not_found=result.rows_error_movie_not_found,
+        stopped_due_to_rate_limit=result.stopped_due_to_rate_limit,
         duration_ms=result.duration_ms,
     )

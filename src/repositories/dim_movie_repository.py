@@ -5,9 +5,6 @@ using an injected ``AsyncSession``. All methods return DTOs; SQLModel table
 instances are never exposed outside this module.
 """
 
-import time
-from collections.abc import Sequence
-
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +14,7 @@ from src.models.dwh import DimMovieDto
 from src.models.dwh_tables import DimMovieTable
 from src.repositories.exceptions import IntegrityViolationError
 from src.utils.dwh_mappers import dim_movie_dto_to_table, dim_movie_table_to_dto
+from src.utils.timing import log_execution_time
 
 
 class DimMovieRepository:
@@ -46,6 +44,7 @@ class DimMovieRepository:
         """
         self._session = session
 
+    @log_execution_time()
     async def get_by_id(self: "DimMovieRepository", movie_id: int) -> DimMovieDto | None:
         """Retrieve a movie by its surrogate key.
 
@@ -56,7 +55,6 @@ class DimMovieRepository:
             A populated ``DimMovieDto`` when the record exists, or ``None``
             when no movie with the given ID is found.
         """
-        start = time.perf_counter()
         logger.debug("Fetching movie by ID", extra={"movie_id": movie_id})
 
         result = await self._session.execute(
@@ -64,21 +62,18 @@ class DimMovieRepository:
         )
         table = result.scalar_one_or_none()
 
-        duration_ms = (time.perf_counter() - start) * 1000
         if table is None:
-            logger.debug(
-                "Movie not found",
-                extra={"movie_id": movie_id, "duration_ms": duration_ms},
-            )
+            logger.debug("Movie not found", extra={"movie_id": movie_id})
             return None
 
         dto = dim_movie_table_to_dto(table)
         logger.debug(
             "Movie fetched",
-            extra={"movie_id": movie_id, "imdb_id": dto.imdb_id, "duration_ms": duration_ms},
+            extra={"movie_id": movie_id, "imdb_id": dto.imdb_id},
         )
         return dto
 
+    @log_execution_time()
     async def get_by_natural_key(
         self: "DimMovieRepository",
         imdb_id: str,
@@ -92,7 +87,6 @@ class DimMovieRepository:
             A populated ``DimMovieDto`` when the record exists, or ``None``
             when no movie with the given IMDb ID is found.
         """
-        start = time.perf_counter()
         logger.debug("Fetching movie by IMDb ID", extra={"imdb_id": imdb_id})
 
         result = await self._session.execute(
@@ -100,21 +94,18 @@ class DimMovieRepository:
         )
         table = result.scalar_one_or_none()
 
-        duration_ms = (time.perf_counter() - start) * 1000
         if table is None:
-            logger.debug(
-                "Movie not found",
-                extra={"imdb_id": imdb_id, "duration_ms": duration_ms},
-            )
+            logger.debug("Movie not found", extra={"imdb_id": imdb_id})
             return None
 
         dto = dim_movie_table_to_dto(table)
         logger.debug(
             "Movie fetched",
-            extra={"imdb_id": imdb_id, "movie_id": dto.movie_id, "duration_ms": duration_ms},
+            extra={"imdb_id": imdb_id, "movie_id": dto.movie_id},
         )
         return dto
 
+    @log_execution_time()
     async def upsert(self: "DimMovieRepository", dto: DimMovieDto) -> DimMovieDto:
         """Insert or update a movie record.
 
@@ -132,7 +123,6 @@ class DimMovieRepository:
             IntegrityViolationError: When a database constraint is violated
                 (e.g., ``rated_id`` references a non-existent rating).
         """
-        start = time.perf_counter()
         logger.debug("Upserting movie", extra={"imdb_id": dto.imdb_id})
 
         existing = await self.get_by_natural_key(dto.imdb_id)
@@ -173,24 +163,22 @@ class DimMovieRepository:
             ) from exc
 
         persisted = dim_movie_table_to_dto(table)
-        duration_ms = (time.perf_counter() - start) * 1000
         logger.debug(
             "Movie upserted",
             extra={
                 "imdb_id": persisted.imdb_id,
                 "movie_id": persisted.movie_id,
-                "duration_ms": duration_ms,
             },
         )
         return persisted
 
+    @log_execution_time()
     async def list_all_movies(self: "DimMovieRepository") -> list[DimMovieDto]:
         """Return every movie row ordered by surrogate key.
 
         Returns:
             All ``DimMovieDto`` instances in ascending ``movie_id`` order.
         """
-        start = time.perf_counter()
         logger.debug("Listing all movies")
 
         result = await self._session.execute(
@@ -199,13 +187,10 @@ class DimMovieRepository:
         tables = result.scalars().all()
         movies = [dim_movie_table_to_dto(table) for table in tables]
 
-        duration_ms = (time.perf_counter() - start) * 1000
-        logger.debug(
-            "All movies listed",
-            extra={"count": len(movies), "duration_ms": duration_ms},
-        )
+        logger.debug("All movies listed", extra={"count": len(movies)})
         return movies
 
+    @log_execution_time()
     async def bulk_load_title_map(
         self: "DimMovieRepository",
     ) -> dict[str, int]:
@@ -223,7 +208,6 @@ class DimMovieRepository:
             title_map = await repo.bulk_load_title_map()
             movie_id = title_map.get("INCEPTION")
         """
-        start = time.perf_counter()
         logger.debug("Loading full movie title map")
 
         result = await self._session.execute(
@@ -237,47 +221,5 @@ class DimMovieRepository:
             if row.movie_id is not None:
                 title_map[title_upper] = row.movie_id
 
-        duration_ms = (time.perf_counter() - start) * 1000
-        logger.debug(
-            "Movie title map loaded",
-            extra={"count": len(title_map), "duration_ms": duration_ms},
-        )
+        logger.debug("Movie title map loaded", extra={"count": len(title_map)})
         return title_map
-
-    async def bulk_upsert(
-        self: "DimMovieRepository",
-        dtos: Sequence[DimMovieDto],
-    ) -> list[DimMovieDto]:
-        """Insert or update multiple movie records in a single transaction.
-
-        Each DTO is upserted by its ``imdb_id`` natural key. Existing records
-        are updated; new records are inserted.
-
-        Args:
-            dtos: Sequence of movie records to persist. May be empty.
-
-        Returns:
-            List of persisted ``DimMovieDto`` instances with ``movie_id``
-            fields populated. The order matches the input order.
-
-        Raises:
-            IntegrityViolationError: When any constraint is violated.
-        """
-        start = time.perf_counter()
-        count = len(dtos)
-        logger.debug("Bulk upserting movies", extra={"count": count})
-
-        if count == 0:
-            return []
-
-        persisted: list[DimMovieDto] = []
-        for dto in dtos:
-            result = await self.upsert(dto)
-            persisted.append(result)
-
-        duration_ms = (time.perf_counter() - start) * 1000
-        logger.debug(
-            "Movies bulk upserted",
-            extra={"count": count, "duration_ms": duration_ms},
-        )
-        return persisted

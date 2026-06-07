@@ -37,6 +37,8 @@ class RatingsRefreshResponseDto(BaseModel):
         ratings_unchanged: Movies with no rating change.
         omdb_not_found: Movies OMDb could not match.
         omdb_errors: Non-fatal per-movie failures.
+        stopped_due_to_rate_limit: ``True`` when OMDb quota was exhausted before
+            all movies were refreshed.
         duration_ms: Wall-clock duration in milliseconds.
     """
 
@@ -46,6 +48,7 @@ class RatingsRefreshResponseDto(BaseModel):
     ratings_unchanged: int
     omdb_not_found: int
     omdb_errors: int
+    stopped_due_to_rate_limit: bool
     duration_ms: float
 
 
@@ -73,7 +76,7 @@ async def get_ratings(
         Summary counts for the refresh run.
 
     Raises:
-        HTTPException: HTTP 422 on OMDb auth or rate-limit failure.
+        HTTPException: HTTP 422 on invalid OMDb API key.
     """
     logger.info("Ratings refresh request received")
 
@@ -122,5 +125,6 @@ async def get_ratings(
         ratings_unchanged=result.ratings_unchanged,
         omdb_not_found=result.omdb_not_found,
         omdb_errors=result.omdb_errors,
+        stopped_due_to_rate_limit=result.stopped_due_to_rate_limit,
         duration_ms=result.duration_ms,
     )

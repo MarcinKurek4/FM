@@ -22,37 +22,6 @@ class RepositoryError(Exception):
     """
 
 
-class RecordNotFoundError(RepositoryError):
-    """Raised when a requested record does not exist.
-
-    This exception is raised by repository methods that expect to find
-    exactly one record matching the given criteria. It is distinct from
-    methods that return ``None`` on no match (e.g., ``get_by_id`` vs.
-    ``find_by_id``).
-
-    Attributes:
-        identifier: The primary key or natural key that was queried.
-        table_name: The name of the table where the record was not found.
-
-    Example:
-        raise RecordNotFoundError(
-            identifier=42,
-            table_name="dim_movie",
-        )
-    """
-
-    def __init__(self: "RecordNotFoundError", identifier: object, table_name: str) -> None:
-        """Initialise the exception.
-
-        Args:
-            identifier: The key value that was queried (int, str, UUID, etc.).
-            table_name: The table name where the lookup occurred.
-        """
-        self.identifier = identifier
-        self.table_name = table_name
-        super().__init__(f"Record not found in {table_name}: {identifier}")
-
-
 class IntegrityViolationError(RepositoryError):
     """Raised when a persistence operation violates a database constraint.
 

@@ -4,7 +4,6 @@ Consumers depend on ``DimGenreRepositoryProtocol`` rather than the concrete
 repository implementation.
 """
 
-from collections.abc import Sequence
 from typing import Protocol
 
 from src.models.dwh import DimGenreDto
@@ -66,26 +65,5 @@ class DimGenreRepositoryProtocol(Protocol):
 
         Raises:
             IntegrityViolationError: When a database constraint is violated.
-        """
-        ...
-
-    async def bulk_upsert(
-        self: "DimGenreRepositoryProtocol",
-        dtos: Sequence[DimGenreDto],
-    ) -> list[DimGenreDto]:
-        """Insert or update multiple genre records in a single transaction.
-
-        Each DTO is upserted by its ``genre_name`` natural key. Existing
-        records are updated; new records are inserted.
-
-        Args:
-            dtos: Sequence of genre records to persist. May be empty.
-
-        Returns:
-            List of persisted ``DimGenreDto`` instances with ``genre_id``
-            fields populated. The order matches the input order.
-
-        Raises:
-            IntegrityViolationError: When any constraint is violated.
         """
         ...
