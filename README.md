@@ -2,7 +2,8 @@
 
 FM is a Python analytics pipeline for loading daily box office revenue,
 enriching movie titles with OMDb metadata, storing the result in a PostgreSQL
-data warehouse, and exposing FastAPI endpoints for incremental updates.
+data warehouse, exposing FastAPI endpoints for incremental updates, and
+presenting box-office rankings through a Streamlit analytics dashboard.
 
 ## Architecture Overview
 
@@ -23,29 +24,28 @@ The application follows the layered `src/` layout:
 - `factories/` centralizes shared resource construction.
 - `utils/` contains parsing, mapping, and conversion helpers.
 - `config/` owns settings and structured logging initialization.
+- `analytics/` hosts the Streamlit ranking dashboard (isolated from `src/`).
 
-```mermaid
-flowchart LR
-    RawRevenue["data/raw/revenues_per_day (1).csv"]
-    TitleMaster["data/master/revenue_by_title.csv"]
-    OMDb["OMDb API"]
-    OMDbJson["data/raw/omdb_titles_init_result.json"]
-    DateCsv["data/reference/dim_date.csv"]
-    API["FastAPI application"]
-    DWH["PostgreSQL dwh schema"]
-    Dashboard["Streamlit Dashboard\n(analytics/)"]
 
-    RawRevenue --> TitleMaster
-    TitleMaster --> OMDb
-    OMDb --> OMDbJson
-    RawRevenue --> DateCsv
-    DateCsv --> DWH
-    OMDbJson --> DWH
-    RawRevenue --> DWH
-    API --> OMDb
-    API --> DWH
-    DWH --> Dashboard
-```
+## Architecture Decision Records
+
+Architectural decisions with lasting impact are documented as ADRs in
+[`docs/adr/`](docs/adr/). Each record follows a fixed template: problem,
+options considered, decision, and consequences. New ADRs receive the next
+sequential four-digit prefix; accepted decisions are marked **Accepted** in
+the file header.
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| [0001](docs/adr/0001-technology-stack.md) | Technology stack | Accepted |
+| [0002](docs/adr/0002-omdb-dwh-init-load-etl.md) | OMDb DWH init-load ETL | Accepted |
+| [0003](docs/adr/0003-revenue-init-load-etl.md) | Revenue init-load ETL | Accepted |
+| [0004](docs/adr/0004-incremental-revenue-upload-endpoint-with-omdb-enrichment.md) | Incremental revenue upload endpoint | Accepted |
+| [0005](docs/adr/0005-get-ratings-omdb-refresh-endpoint.md) | GET ratings OMDb refresh endpoint | Accepted |
+
+Decisions that affect frameworks, data models, integration patterns, storage
+engines, pipeline architecture, or API design must be recorded in an ADR
+before implementation begins.
 
 ## Stack
 
@@ -123,6 +123,8 @@ Settings. Sensitive values must be supplied through environment variables or
 | `POSTGRES_DB` | string | `fm` | no | PostgreSQL database name. |
 | `POSTGRES_USER` | string | `fm_user` | no | PostgreSQL user. |
 | `LOG_LEVEL` | string | `INFO` | no | Loguru log level. |
+| `APP_PORT` | integer | `8000` | no | Host port mapped to the FastAPI container. |
+| `DASHBOARD_PORT` | integer | `8501` | no | Host port mapped to the Streamlit dashboard container. |
 
 ## Database Migrations
 
@@ -179,11 +181,17 @@ Key persistence characteristics:
 
 - Natural keys such as `imdb_id`, `source_row_id`, and dictionary names are
   used for idempotent upserts.
-- `fact_revenue.source_row_id` prevents duplicate fact rows on repeated loads.
-- `fact_movie_rating` keeps historical rating changes rather than overwriting
-  previous values.
+- `fact_revenue.source_row_id` prevents duplicate fact rows on repeated ETL runs.
+- `fact_revenue (movie_id, date_id, distributor_id)` enforces business grain
+  with `NULLS NOT DISTINCT` on `distributor_id`.
+- `fact_movie_rating` keeps historical rating changes (SCD Type 2) and allows at
+  most one current row per movie via a partial unique index on `movie_id`.
 - All persistence is performed through repository classes with injected async
   sessions.
+
+### Entity-Relationship Diagram
+
+![DWH star schema ER diagram](docs/pics/er_diagram.png)
 
 ## Input Data Preparation
 
@@ -315,7 +323,8 @@ same DWH bootstrap sequence used by the local ETL scripts.
 - `db`, a PostgreSQL 17 container using the `fm_pgdata` volume for persistent
   database storage.
 - `app`, the FastAPI service built from `Dockerfile`.
-- `fm_network`, an explicit bridge network shared by both containers.
+- `dashboard`, the Streamlit analytics service built from `Dockerfile.analytics`.
+- `fm_network`, an explicit bridge network shared by all containers.
 
 The application image contains source code, Alembic migrations, scripts, and
 the `data` directory. The distribution can include the generated master data
@@ -345,6 +354,11 @@ docker compose up -d
 
 The running application exposes endpoints for refreshing rating facts and
 loading new revenue data. Both endpoints call the OMDb API during processing.
+
+Interactive API documentation is available at `http://localhost:8000/docs` after
+the application starts.
+
+![FastAPI Swagger UI](docs/pics/swagger.png)
 
 ### OMDb daily quota — partial completion
 
@@ -542,6 +556,22 @@ the boundary.
 | TOP 3 per Release Year | Individual bar chart and table generated dynamically for each release year, year descending. |
 | TOP 3 per Genre | Individual bar chart and table generated dynamically for each genre, genre name ascending. |
 
+### Dashboard Screenshots
+
+![TOP 10 Movies — OMDb Box Office](docs/pics/top-10-movies-omdb-box-office.png)
+
+![TOP 10 Movies — Tracked Revenue / OMDb Box Office Ratio](docs/pics/top-10-movies-revenue-omdb-ratio.png)
+
+![TOP 10 Movies — Total Tracked Revenue](docs/pics/top-10-movies-total-tracked-revenue.png)
+
+![TOP 10 Directors — Total Revenue and Film Count](docs/pics/top-10-directors-revenue-film-count.png)
+
+![TOP 10 Distributors — Total Revenue](docs/pics/top-10-distributors-total-revenue.png)
+
+![TOP 3 Movies per Release Year](docs/pics/top-3-movies-per-release-year.png)
+
+![TOP 3 Movies per Genre](docs/pics/top-3-movies-per-genre.png)
+
 ### Running the Dashboard — Local
 
 1. Install analytics dependencies (first time only):
@@ -561,24 +591,7 @@ poetry run streamlit run analytics/dashboard.py
 The application opens at `http://localhost:8501`. All data is cached for
 5 minutes; click **Refresh data** in the sidebar to force a reload.
 
-### Running the Dashboard — Docker
 
-Build and start the dedicated `dashboard` service alongside PostgreSQL:
-
-```bash
-docker compose up -d db dashboard
-```
-
-The dashboard is accessible at `http://localhost:8501` (or the port set in
-`DASHBOARD_PORT`). The service uses `Dockerfile.analytics` — a separate,
-lightweight image that installs only the `analytics` dependency group and
-does not include the FastAPI application or ETL tooling.
-
-To build the image in isolation:
-
-```bash
-docker build -f Dockerfile.analytics -t fm-dashboard .
-```
 
 ### Module Layout
 
@@ -591,5 +604,3 @@ Dockerfile.analytics    # Standalone Docker image for the dashboard
 ```
 
 ---
-
-## Dasboards

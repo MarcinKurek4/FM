@@ -32,7 +32,7 @@ WORKDIR /app
 
 COPY pyproject.toml poetry.lock README.md ./
 
-RUN poetry install --only analytics
+RUN poetry install --only analytics --no-root
 
 # ---- Runtime -----------------------------------------------------------------
 

@@ -22,7 +22,7 @@ import datetime
 import uuid
 
 from decimal import Decimal
-from sqlalchemy import BigInteger, Column, ForeignKey, Integer, Numeric, Text
+from sqlalchemy import BigInteger, Column, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -40,13 +40,16 @@ class DimMovieTable(SQLModel, table=True):
     """
 
     __tablename__ = "dim_movie"
-    __table_args__ = {"schema": "dwh"}
+    __table_args__ = (
+        UniqueConstraint("imdb_id", name="uq_dim_movie_imdb_id"),
+        {"schema": "dwh"},
+    )
 
     movie_id: int | None = Field(
         sa_column=Column(BigInteger, primary_key=True, autoincrement=True),
         default=None,
     )
-    imdb_id: str = Field(max_length=15, unique=True, nullable=False, index=True)
+    imdb_id: str = Field(max_length=15, nullable=False, index=True)
     title: str = Field(max_length=500, nullable=False)
     release_year: int | None = Field(default=None)
     rated_id: int | None = Field(default=None, foreign_key="dwh.dim_rated.rated_id", index=True)
@@ -70,12 +73,15 @@ class DimDateTable(SQLModel, table=True):
     """
 
     __tablename__ = "dim_date"
-    __table_args__ = {"schema": "dwh"}
+    __table_args__ = (
+        UniqueConstraint("date", name="uq_dim_date_date"),
+        {"schema": "dwh"},
+    )
 
     date_id: int = Field(
         sa_column=Column(BigInteger, primary_key=True, autoincrement=False),
     )
-    date: datetime.date = Field(unique=True, nullable=False, index=True)
+    date: datetime.date = Field(nullable=False, index=True)
     year: int = Field(nullable=False)
     quarter: int = Field(nullable=False)
     month: int = Field(nullable=False)
@@ -96,13 +102,16 @@ class DimDistributorTable(SQLModel, table=True):
     """
 
     __tablename__ = "dim_distributor"
-    __table_args__ = {"schema": "dwh"}
+    __table_args__ = (
+        UniqueConstraint("distributor_name", name="uq_dim_distributor_distributor_name"),
+        {"schema": "dwh"},
+    )
 
     distributor_id: int | None = Field(
         sa_column=Column(Integer, primary_key=True, autoincrement=True),
         default=None,
     )
-    distributor_name: str = Field(max_length=200, unique=True, nullable=False, index=True)
+    distributor_name: str = Field(max_length=200, nullable=False, index=True)
     loaded_at: datetime.datetime = Field(nullable=False)
 
 
@@ -114,13 +123,16 @@ class DimGenreTable(SQLModel, table=True):
     """
 
     __tablename__ = "dim_genre"
-    __table_args__ = {"schema": "dwh"}
+    __table_args__ = (
+        UniqueConstraint("genre_name", name="uq_dim_genre_genre_name"),
+        {"schema": "dwh"},
+    )
 
     genre_id: int | None = Field(
         sa_column=Column(Integer, primary_key=True, autoincrement=True),
         default=None,
     )
-    genre_name: str = Field(max_length=100, unique=True, nullable=False, index=True)
+    genre_name: str = Field(max_length=100, nullable=False, index=True)
     loaded_at: datetime.datetime = Field(nullable=False)
 
 
@@ -132,13 +144,16 @@ class DimDirectorTable(SQLModel, table=True):
     """
 
     __tablename__ = "dim_director"
-    __table_args__ = {"schema": "dwh"}
+    __table_args__ = (
+        UniqueConstraint("director_name", name="uq_dim_director_director_name"),
+        {"schema": "dwh"},
+    )
 
     director_id: int | None = Field(
         sa_column=Column(Integer, primary_key=True, autoincrement=True),
         default=None,
     )
-    director_name: str = Field(max_length=200, unique=True, nullable=False, index=True)
+    director_name: str = Field(max_length=200, nullable=False, index=True)
     loaded_at: datetime.datetime = Field(nullable=False)
 
 
@@ -150,13 +165,16 @@ class DimRatedTable(SQLModel, table=True):
     """
 
     __tablename__ = "dim_rated"
-    __table_args__ = {"schema": "dwh"}
+    __table_args__ = (
+        UniqueConstraint("rating_code", name="uq_dim_rated_rating_code"),
+        {"schema": "dwh"},
+    )
 
     rated_id: int | None = Field(
         sa_column=Column(Integer, primary_key=True, autoincrement=True),
         default=None,
     )
-    rating_code: str = Field(max_length=20, unique=True, nullable=False, index=True)
+    rating_code: str = Field(max_length=20, nullable=False, index=True)
     rating_description: str = Field(max_length=200, nullable=False)
     loaded_at: datetime.datetime = Field(nullable=False)
 
@@ -223,21 +241,34 @@ class FactRevenueTable(SQLModel, table=True):
     """SQLModel table for ``dwh.fact_revenue``.
 
     Maps one-to-one with ``FactRevenueDto``. The surrogate key
-    ``revenue_id`` is auto-generated. The natural key ``source_row_id``
-    (UUID from the source CSV) has a unique constraint for idempotency.
+    ``revenue_id`` is auto-generated. Natural keys:
+
+        - ``source_row_id`` (UUID from the source CSV) for ETL idempotency.
+        - ``(movie_id, date_id, distributor_id)`` for business grain
+          (``NULLS NOT DISTINCT`` on ``distributor_id``).
 
     Foreign keys reference ``dim_movie`` (BIGINT), ``dim_date`` (BIGINT),
     and ``dim_distributor``.
     """
 
     __tablename__ = "fact_revenue"
-    __table_args__ = {"schema": "dwh"}
+    __table_args__ = (
+        UniqueConstraint("source_row_id", name="uq_fact_revenue_source_row_id"),
+        UniqueConstraint(
+            "movie_id",
+            "date_id",
+            "distributor_id",
+            name="uq_fact_revenue_movie_date_distributor",
+            postgresql_nulls_not_distinct=True,
+        ),
+        {"schema": "dwh"},
+    )
 
     revenue_id: int | None = Field(
         sa_column=Column(BigInteger, primary_key=True, autoincrement=True),
         default=None,
     )
-    source_row_id: uuid.UUID = Field(unique=True, nullable=False, index=True)
+    source_row_id: uuid.UUID = Field(nullable=False, index=True)
     movie_id: int = Field(
         sa_column=Column(
             BigInteger,
@@ -276,10 +307,21 @@ class FactMovieRatingTable(SQLModel, table=True):
     Each movie may have multiple rows (one per rating change). The
     ``is_current`` flag marks the active record. The validity period is
     defined by ``valid_from`` and ``valid_to``.
+
+    A partial unique index on ``movie_id`` where ``is_current = true``
+    enforces at most one active rating row per movie.
     """
 
     __tablename__ = "fact_movie_rating"
-    __table_args__ = {"schema": "dwh"}
+    __table_args__ = (
+        Index(
+            "uq_fact_movie_rating_movie_id_current",
+            "movie_id",
+            unique=True,
+            postgresql_where=text("is_current = true"),
+        ),
+        {"schema": "dwh"},
+    )
 
     rating_id: int | None = Field(
         sa_column=Column(BigInteger, primary_key=True, autoincrement=True),
